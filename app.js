@@ -367,7 +367,7 @@ VIEWS.home = function () {
     }
     html += '<div class="card"><div class="row spread"><div><div class="muted small">You are at</div><h2 style="font-size:20px;margin:0">' + esc(h.locationName) + '</h2></div>' +
       '<div class="row"><button class="btn" data-act="send">Send assets</button><button class="btn secondary" data-act="issue">Report issue</button></div></div>' +
-      '<div class="row" style="margin-top:10px">' + pill(devs.length + ' devices', 'info') + pill(sds.length + ' SD cards', 'info') +
+      '<div class="row" style="margin-top:10px">' + pill(devs.length + ' devices here', 'info') + pill(sds.length + ' SD cards here', 'info') +
       (devs.some(function (a) { return a.status !== 'WORKING'; }) ? pill('faulty devices', 'bad') : '') + '</div></div>';
     html += '<div class="card"><h2 style="margin:0">Assets at this property</h2>' +
       '<p class="small muted" style="margin:6px 0">Tap a device for its actions. Tick several to report an issue, send or assign them together.</p>' +
@@ -377,7 +377,7 @@ VIEWS.home = function () {
 
     const visible = function () {
       const q = $('assetFilter').value.trim().toLowerCase();
-      return h.assets.filter(function (a) { return !q || (a.id + ' ' + a.subType + ' ' + a.holder + ' ' + a.category + ' ' + a.assignedTo).toLowerCase().indexOf(q) !== -1; });
+      return h.assets.filter(function (a) { return (!q || (a.id + ' ' + a.subType + ' ' + a.holder + ' ' + a.category + ' ' + a.assignedTo).toLowerCase().indexOf(q) !== -1); });
     };
     const updateBar = function () {
       $('barCount') && ($('barCount').textContent = homeSel.size + ' selected');
@@ -750,7 +750,7 @@ VIEWS.newTransfer = function (preselect) {
     '<div class="stickyHead">' + (isAdmin ? '<label class="f">Supervisor receiving</label><select id="toSup"><option value="">Choose…</option></select>'
       : '<label class="f">Send to</label><select id="toSup"><option value="OFFICE">' + esc(OPTS.ui.officeName) + '</option></select>') +
     '<label class="f">Assets (type to search, tick to add)</label><div id="sendSearch"></div>' +
-    '<label class="f" style="margin-bottom:0"><input type="checkbox" id="showAll"> Include assets the records show elsewhere (flagged for review)</label></div>' +
+    (isAdmin ? '<label class="f" style="margin-bottom:0"><input type="checkbox" id="showAll"> Include assets the records show elsewhere (flagged for review)</label>' : '<div class="small muted">Devices and SD cards at your property are listed, yours first.</div>') + '</div>' +
     '<div id="pickHost"></div>' +
     '<div id="othersHost"></div><label class="f">Note (optional)</label><textarea id="note"></textarea><div id="photoHost"></div>' +
     '<div class="row" style="margin-top:14px"><button class="btn" id="submitTransfer">' + (isAdmin ? 'Mark as dispatched' : 'Mark as sent') + '</button></div>' +
@@ -762,9 +762,9 @@ VIEWS.newTransfer = function (preselect) {
     const pre = Array.isArray(preselect) ? preselect : [];
     const mineIds = {}; all.forEach(function (a) { if (a.mine) mineIds[a.id] = true; });
     const outsideMine = pre.some(function (id) { return !mineIds[id]; });
-    if (outsideMine) $('showAll').checked = true;
-    const picker = createPicker($('pickHost'), { searchHost: $('sendSearch'), items: assetPickerItems(all, !outsideMine), multi: true, placeholder: 'Search by ID or type…', selected: pre });
-    $('showAll').addEventListener('change', function () { picker.setItems(assetPickerItems(all, !$('showAll').checked)); });
+    if (outsideMine && $('showAll')) $('showAll').checked = true;
+    const picker = createPicker($('pickHost'), { searchHost: $('sendSearch'), items: assetPickerItems(all, isAdmin && !outsideMine), multi: true, placeholder: 'Search by ID or type…', selected: pre });
+    if ($('showAll')) $('showAll').addEventListener('change', function () { picker.setItems(assetPickerItems(all, !$('showAll').checked)); });
     $('submitTransfer').addEventListener('click', function (e) {
       const ids = picker.selected(), oth = others.values();
       if (!ids.length && !oth.length) return toast('Select at least one asset.', true);
@@ -789,7 +789,7 @@ VIEWS.checkin = function () {
     '<div id="pickHost" style="margin-top:8px"></div><div id="othersHost"></div>' +
     '<div class="row" style="margin-top:14px"><button class="btn" id="submitCheckin">Submit check-in</button></div><div id="result"></div></div>';
   const others = othersField($('othersHost'));
-  return callBackend('picker').then(function (all) {
+  return callBackend('picker', { scope: 'all' }).then(function (all) {
     const mine = all.filter(function (a) { return a.mine && a.st === 'AVAILABLE'; });
     const picker = createPicker($('pickHost'), { searchHost: $('chkSearch'), items: assetPickerItems(all, true), multi: true, placeholder: 'Search your assets…' });
     $('showAll').addEventListener('change', function () { picker.setItems(assetPickerItems(all, !$('showAll').checked)); });
