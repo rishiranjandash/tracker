@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Asset Tracker</title>
+<link rel="stylesheet" href="style.css" />
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+<body>
+
+<header class="topbar">
+  <h1 id="appTitle">Asset Tracker</h1>
+  <span class="who" id="userLabel"></span>
+  <select id="roleSwitch" class="hidden" title="Which role you are acting as" style="width:auto"></select>
+  <button class="linkBtn bell hidden" id="bellBtn" title="Alerts">Alerts<span class="badge hidden" id="bellBadge">0</span></button>
+  <button class="linkBtn hidden" id="signOutBtn">Sign out</button>
+</header>
+
+<div id="signedOut" class="signin card">
+  <h2>Asset Tracker</h2>
+  <p class="muted">Sign in with the Google account an admin added you with.</p>
+  <div id="googleSignInButton" style="display:flex;justify-content:center"></div>
+  <p id="signInError" class="small" style="color:var(--bad)"></p>
+</div>
+
+<nav class="tabs hidden" id="tabs"></nav>
+<main id="view" class="hidden"></main>
+<div id="modalHost"></div>
+<div id="toastHost"></div>
+
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
