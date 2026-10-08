@@ -16,6 +16,12 @@ let OPTS = {
 
 let activeRole = ''; // which of their roles this person is acting as (remembered on this device)
 try { activeRole = localStorage.getItem('at_role') || ''; } catch (e) { /* storage blocked: default role is used */ }
+let sessionToken = ''; // issued by the server after one Google sign-in; lets this device skip the sign-in for days
+try { sessionToken = localStorage.getItem('at_session') || ''; } catch (e) { /* storage blocked: sign in every visit */ }
+function saveSession(tok) {
+  sessionToken = tok || '';
+  try { if (tok) localStorage.setItem('at_session', tok); else localStorage.removeItem('at_session'); } catch (e) { /* ignore */ }
+}
 let idToken = null;
 let me = null;          // home payload for the current user
 let tab = null;
@@ -38,7 +44,59 @@ function catLabel(c) { return c === 'SD_CARD' ? 'SD card' : 'Device'; }
 
 // ===================== TRANSPORT =====================
 
+// Actions that only read. Everything else is a save, which wipes the screen memo below.
+const READS = { home: 1, picker: 1, search: 1, issues: 1, flags: 1, notifications: 1, supervisors: 1, properties: 1, supervisorList: 1, team: 1, assignments: 1, report: 1, options: 1, transfers: 1, pulse: 1, photoGet: 1, sync: 1 };
+const NO_MEMO = { search: 1, report: 1, photoGet: 1, pulse: 1, sync: 1, notifications: 1 };
+let memo = {};          // last answer for each read, so a screen can be drawn instantly while a fresh answer loads
+let memoEpoch = 0;      // bumped by every save, so an answer that was in flight during a save is not remembered
+let lastStamp = '';     // change detector from the 45-second pulse
+function memoKey(action, payload) { return action + '|' + JSON.stringify(payload || {}); }
+
 function callBackend(action, payload) {
+  const epoch = memoEpoch;
+  if (!READS[action]) { memo = {}; memoEpoch++; lastStamp = ''; }
+  return rawCall(action, payload).then(function (data) {
+    if (READS[action] && !NO_MEMO[action] && epoch === memoEpoch) memo[memoKey(action, payload)] = { at: Date.now(), data: data };
+    return data;
+  }, function (e) {
+    if (e && e.code === 'AUTH') signOut();
+    throw e;
+  });
+}
+
+/** A read that may be answered from the memo when it is younger than maxAgeMs (used for form pick-lists). */
+function cachedCall(action, payload, maxAgeMs) {
+  const hit = memo[memoKey(action, payload)];
+  if (hit && Date.now() - hit.at < maxAgeMs) return Promise.resolve(hit.data);
+  return callBackend(action, payload);
+}
+
+function userIsBusy() {
+  const el = document.activeElement;
+  const typing = el && ['INPUT', 'TEXTAREA', 'SELECT'].indexOf(el.tagName) !== -1;
+  return modalOpen() || teamDirty || !!typing;
+}
+
+/**
+ * Stale-while-revalidate: if we already have an answer, draw it NOW; then ask the server and, if the answer
+ * differs, draw again (unless the person has moved on, is typing, or has unsaved edits).
+ */
+function swr(action, payload, render) {
+  const key = memoKey(action, payload);
+  const hit = memo[key];
+  const myNav = navId;
+  if (hit) render(hit.data, true);
+  if (hit && Date.now() - hit.at < 15000) return Promise.resolve(hit.data);
+  if (!hit) $('view').innerHTML = '<div class="empty">Loading…</div>';   // nothing to show yet: never leave the previous screen under the new tab
+  return callBackend(action, payload).then(function (data) {
+    if (myNav !== navId) return data;                                   // they navigated elsewhere while we waited
+    if (!hit) render(data, false);
+    else if (JSON.stringify(hit.data) !== JSON.stringify(data) && !userIsBusy()) render(data, false);
+    return data;
+  });
+}
+
+function rawCall(action, payload) {
   if (window.MOCK_BACKEND) {
     return Promise.resolve(window.MOCK_BACKEND(action, Object.assign({ asRole: activeRole }, payload || {}))).then(handleResult);
   }
@@ -49,7 +107,7 @@ function callBackend(action, payload) {
     function cleanup() { try { delete window[cb]; } catch (e) { window[cb] = undefined; } if (script.parentNode) script.parentNode.removeChild(script); }
     window[cb] = function (res) { if (done) return; done = true; cleanup(); resolve(res); };
     script.onerror = function () { if (done) return; done = true; cleanup(); reject(new Error('Could not reach the server. Check your connection.')); };
-    const data = Object.assign({ googleIdToken: idToken, asRole: activeRole }, payload || {});
+    const data = Object.assign({ sessionToken: sessionToken || undefined, googleIdToken: sessionToken ? undefined : idToken, asRole: activeRole }, payload || {});
     script.src = CONFIG.APPS_SCRIPT_URL + '?action=' + encodeURIComponent(action) + '&callback=' + encodeURIComponent(cb) +
       '&data=' + encodeURIComponent(JSON.stringify(data)) + '&_=' + Date.now();
     document.body.appendChild(script);
@@ -57,8 +115,9 @@ function callBackend(action, payload) {
 }
 
 function handleResult(res) {
+  if (res && res.session) saveSession(res.session);   // the server renews the session for devices that stay in use
   if (res && res.ok) return res.data;
-  if (res && res.code === 'AUTH') { signOut(); throw new Error('Session expired - please sign in again.'); }
+  if (res && res.code === 'AUTH') { saveSession(''); const a = new Error('Please sign in again.'); a.code = 'AUTH'; throw a; }
   const err = new Error(res && res.error ? res.error : 'Something went wrong.');
   err.code = res && res.code;
   throw err;
@@ -251,24 +310,49 @@ function othersField(host) {
 // ===================== AUTH =====================
 
 function initAuth() {
-  if (window.MOCK_EMAIL !== undefined) { startSession(); return; }
+  if (window.MOCK_EMAIL !== undefined) { startSession(true); return; }
+  if (sessionToken) {                       // remembered: go straight in, no sign-in screen
+    $('signedOut').classList.add('hidden');
+    $('view').classList.remove('hidden');
+    $('view').innerHTML = '<div class="empty">Opening…</div>';
+    startSession(true);
+    return;
+  }
+  showSignIn();
+}
+
+function showSignIn(message) {
+  $('signedOut').classList.remove('hidden');
+  $('signInError').textContent = message || '';
+  if (showSignIn.ready) return;
+  showSignIn.ready = true;
   const wait = setInterval(function () {
     if (!window.google || !google.accounts || !google.accounts.id) return;
     clearInterval(wait);
     google.accounts.id.initialize({
       client_id: CONFIG.GOOGLE_CLIENT_ID,
-      callback: function (r) { idToken = r.credential; startSession(); }
+      callback: function (r) { loginWithGoogle(r.credential); }
     });
     google.accounts.id.renderButton($('googleSignInButton'), { theme: 'outline', size: 'large' });
   }, 100);
 }
 
-function startSession() {
+/** One Google sign-in buys a session this device keeps, so the next visit opens straight into the app. */
+function loginWithGoogle(credential) {
   $('signInError').textContent = '';
-  callBackend('home').then(function (h) {
-    me = h;
-    return callBackend('options').then(function (o) { OPTS = o; return h; });
-  }).then(function (h) {
+  callBackend('login', { googleIdToken: credential, sessionToken: '' }).then(function (d) {
+    saveSession(d.session);
+    idToken = null;
+    startSession(true);
+  }).catch(function (e) { $('signInError').textContent = e.message; });
+}
+
+function startSession(withSync) {
+  $('signInError').textContent = '';
+  memo = {}; memoEpoch++; lastStamp = '';
+  // The two requests run side by side; the home answer is remembered so the first screen draws without asking again.
+  Promise.all([callBackend('home'), callBackend('options')]).then(function (r) {
+    const h = r[0]; me = h; OPTS = r[1];
     $('signedOut').classList.add('hidden');
     $('tabs').classList.remove('hidden'); $('view').classList.remove('hidden');
     $('bellBtn').classList.remove('hidden'); $('signOutBtn').classList.remove('hidden');
@@ -278,26 +362,61 @@ function startSession() {
     $('userLabel').textContent = h.name + (h.roles.length > 1 ? '' : ' · ' + h.role.toLowerCase());
     const rs = $('roleSwitch');
     if (h.roles.length > 1) {
-      rs.innerHTML = h.roles.map(function (r) { return '<option value="' + esc(r) + '"' + (r === h.role ? ' selected' : '') + '>Acting as: ' + esc(r.charAt(0) + r.slice(1).toLowerCase()) + '</option>'; }).join('');
+      rs.innerHTML = h.roles.map(function (x) { return '<option value="' + esc(x) + '"' + (x === h.role ? ' selected' : '') + '>Acting as: ' + esc(x.charAt(0) + x.slice(1).toLowerCase()) + '</option>'; }).join('');
       rs.classList.remove('hidden');
     } else rs.classList.add('hidden');
     buildTabs(); setTopbarVar();
-    go(me.role === 'SUPERVISOR' ? 'home' : 'dash');
+    go(startTab());
     clearInterval(pollTimer);
     pollTimer = setInterval(poll, (OPTS.ui.pollSeconds || CONFIG.POLL_SECONDS || 45) * 1000);
     updateBadge();
+    if (withSync) setTimeout(backgroundSync, 300);
+    setTimeout(prefetch, 900);
   }).catch(function (e) {
+    if (e.code === 'AUTH') return;                       // callBackend already signed out
+    if (e.code === 'NOT_LISTED') { saveSession(''); $('view').classList.add('hidden'); showSignIn(e.message); return; }
+    $('signedOut').classList.remove('hidden'); $('view').classList.add('hidden');
     $('signInError').textContent = e.message;
+    if (!sessionToken) showSignIn(e.message);
   });
 }
 
+function startTab() {
+  let last = '';
+  try { last = localStorage.getItem('at_tab_' + me.role) || ''; } catch (e) { /* ignore */ }
+  const ok = TABS[me.role].some(function (t) { return t[0] === last; });
+  return ok ? last : (me.role === 'SUPERVISOR' ? 'home' : 'dash');
+}
+
+/** Warm the screens people open next, in the background, one at a time, so the tab switch is instant. */
+function prefetch() {
+  const plan = { SUPERVISOR: [['transfers', {}], ['team', {}], ['picker', {}]], ADMIN: [['transfers', {}], ['flags', {}], ['issues', { openOnly: true }], ['supervisorList', {}], ['picker', {}]], OPS: [['flags', {}], ['issues', { openOnly: true }]] }[me.role] || [];
+  let i = 0;
+  (function next() {
+    if (!me || i >= plan.length || document.hidden) return;
+    const p = plan[i++];
+    if (memo[memoKey(p[0], p[1])]) return next();
+    callBackend(p[0], p[1]).catch(function () { /* optional */ }).then(function () { setTimeout(next, 250); });
+  })();
+}
+
+/** Location sync runs on its own request AFTER the screen is drawn, so nothing waits for it. */
+function backgroundSync() {
+  if (!me) return;
+  callBackend('sync').then(function (r) {
+    if (r && r.moved && r.moved.length) { memo = {}; if (!userIsBusy()) go(tab, true); }
+  }).catch(function () { /* the 5-minute job will catch up */ });
+}
+
 function signOut() {
-  idToken = null; me = null; clearInterval(pollTimer);
+  saveSession(''); idToken = null; me = null; clearInterval(pollTimer); memo = {}; memoEpoch++;
   $('signedOut').classList.remove('hidden');
   ['tabs', 'view', 'bellBtn', 'signOutBtn'].forEach(function (i) { $(i).classList.add('hidden'); });
   $('userLabel').textContent = ''; $('roleSwitch').classList.add('hidden');
+  barClear();
   if (window.google && google.accounts && google.accounts.id) google.accounts.id.disableAutoSelect();
   if (window.onMockSignOut) window.onMockSignOut();
+  if (window.MOCK_EMAIL === undefined) showSignIn();
 }
 
 function updateBadge() {
@@ -305,14 +424,22 @@ function updateBadge() {
   if (me && me.unread > 0) { b.textContent = me.unread; b.classList.remove('hidden'); } else b.classList.add('hidden');
 }
 
+/** Every 45 seconds: one tiny request. The screen only redraws if the server says something changed. */
+let pulseCount = 0;
 function poll() {
   if (!me || document.hidden) return;
-  callBackend('home').then(function (h) {
-    me = h; updateBadge();
-    const typing = document.activeElement && ['INPUT', 'TEXTAREA', 'SELECT'].indexOf(document.activeElement.tagName) !== -1;
-    if (!modalOpen() && !typing && ['home', 'dash', 'transfers'].indexOf(tab) !== -1) go(tab, true);
+  callBackend('pulse').then(function (p) {
+    me.unread = p.unread; updateBadge();
+    const changed = lastStamp && p.stamp !== lastStamp;
+    lastStamp = p.stamp;
+    if (changed) {
+      memo = {};
+      if (['home', 'dash', 'transfers', 'team', 'flags', 'issues'].indexOf(tab) !== -1 && !userIsBusy()) go(tab, true);
+    }
+    if (++pulseCount % 3 === 0) backgroundSync();
   }).catch(function () { /* transient */ });
 }
+document.addEventListener('visibilitychange', function () { if (!document.hidden) poll(); });
 
 // ===================== NAV =====================
 
@@ -327,16 +454,20 @@ function buildTabs() {
   $('tabs').innerHTML = TABS[me.role].map(function (t) { return '<button data-tab="' + t[0] + '">' + t[1] + '</button>'; }).join('');
 }
 
+let navId = 0;
+
 function go(t, keepScroll, arg) {
   if (tab === 'team' && teamDirty && t !== 'team' && !confirm('You have unsaved assignment changes. Leave without saving?')) return;
   teamDirty = false;
   setTopbarVar(); // the bar is taller once signed in (user label, alerts)
   tab = t; barClear();
+  const mine = ++navId;
+  try { if (me && TABS[me.role].some(function (x) { return x[0] === t; })) localStorage.setItem('at_tab_' + me.role, t); } catch (e) { /* ignore */ }
   const hl = PARENT_TAB[t] !== undefined ? PARENT_TAB[t] : t;
   $('tabs').querySelectorAll('button').forEach(function (b) { b.classList.toggle('active', b.dataset.tab === hl); });
   if (!keepScroll) window.scrollTo(0, 0);
   const v = VIEWS[t];
-  Promise.resolve(v(arg)).catch(function (e) { $('view').innerHTML = '<div class="card"><div class="muted">' + esc(e.message) + '</div></div>'; });
+  Promise.resolve(v(arg)).catch(function (e) { if (mine === navId) $('view').innerHTML = '<div class="card"><div class="muted">' + esc(e.message) + '</div></div>'; });
 }
 
 function refreshHome() { return callBackend('home').then(function (h) { me = h; updateBadge(); return h; }); }
@@ -349,7 +480,8 @@ const VIEWS = {};
 let homeSel = new Set();
 
 VIEWS.home = function () {
-  return refreshHome().then(function (h) {
+  return swr('home', {}, function (h) {
+    me = h; updateBadge();
     const devs = h.assets.filter(function (a) { return a.category === 'DEVICE'; });
     const sds = h.assets.filter(function (a) { return a.category === 'SD_CARD'; });
     const existing = {}; h.assets.forEach(function (a) { existing[a.id] = true; });
@@ -447,7 +579,8 @@ function openAssetMenu(id) {
 
 // ---- Dashboard (admin / ops) ----
 VIEWS.dash = function () {
-  return refreshHome().then(function (h) {
+  return swr('home', {}, function (h) {
+    me = h; updateBadge();
     const d = h.dashboard;
     const tile = function (n, l, cls, target) { return '<div class="tile ' + (cls || '') + '" data-go="' + target + '"><div class="n">' + n + '</div><div class="l">' + l + '</div></div>'; };
     let html = '<div class="tiles">' +
@@ -486,7 +619,7 @@ let teamDirty = false; // unsaved changes on the Assign screen
  */
 VIEWS.team = function (preselect) {
   teamDirty = false;
-  return callBackend('team').then(function (t) {
+  return swr('team', {}, function (t) {
     const s = t.summary;
     let html = '<div class="row spread" style="margin-bottom:12px"><h2 style="margin:0">Assign · ' + esc(t.locationName) + '</h2></div>';
     if (s.assignAlert) html += '<div class="banner warn"><div class="grow"><b>' + s.unassignedDevices + ' device(s) not assigned yet</b><div class="small">Give them to today’s workers below. (Expected by ' + esc(t.assignBy) + '.)</div></div></div>';
@@ -696,10 +829,10 @@ function transferCard(t) {
   return html + '</div></div>';
 }
 
+let currentTransfers = [];
 VIEWS.transfers = function () {
-  return refreshHome().then(function (h) {
-    me = h;
-    const list = h.transfers;
+  return swr('transfers', {}, function (list) {
+    currentTransfers = list;
     const mineIncoming = list.filter(function (t) { return t.status === 'IN_TRANSIT' && canReceive(t); });
     const rest = list.filter(function (t) { return mineIncoming.indexOf(t) === -1; });
     let html = '<div class="stickyHead flat"><div class="row spread"><h2 style="margin:0">Transfers</h2><button class="btn" data-act="send">' +
@@ -713,7 +846,7 @@ VIEWS.transfers = function () {
 };
 
 function openReceive(transferId) {
-  const t = me.transfers.find(function (x) { return x.id === transferId; });
+  const t = currentTransfers.find(function (x) { return x.id === transferId; });
   const items = t.items.filter(function (i) { return i.status === 'IN_TRANSIT'; });
   openModal('<div class="row spread"><h2>Confirm receipt · ' + esc(t.id) + '</h2><button class="linkBtn" data-close>Close</button></div>' +
     '<p class="small muted">Tick only what you physically received from ' + esc(t.from) + '. Anything left unticked is flagged as short.</p>' +
@@ -756,7 +889,7 @@ VIEWS.newTransfer = function (preselect) {
     '<div class="row" style="margin-top:14px"><button class="btn" id="submitTransfer">' + (isAdmin ? 'Mark as dispatched' : 'Mark as sent') + '</button></div>' +
     '<p class="small muted">Assets stay with you and show as "in transit" until the receiver confirms what arrived.</p></div>';
   const others = othersField($('othersHost')), photo = photoField($('photoHost'), 'Photo of the package / contents (optional)');
-  return Promise.all([callBackend('picker'), callBackend('supervisorList')]).then(function (r) {
+  return Promise.all([cachedCall('picker', {}, 30000), cachedCall('supervisorList', {}, 300000)]).then(function (r) {
     const all = r[0];
     $('toSup').innerHTML += r[1].map(function (s) { return '<option value="' + esc(s.id) + '">' + (isAdmin ? '' : 'Supervisor: ') + esc(s.name) + ' (' + esc(s.location) + ')</option>'; }).join('');
     const pre = Array.isArray(preselect) ? preselect : [];
@@ -789,7 +922,7 @@ VIEWS.checkin = function () {
     '<div id="pickHost" style="margin-top:8px"></div><div id="othersHost"></div>' +
     '<div class="row" style="margin-top:14px"><button class="btn" id="submitCheckin">Submit check-in</button></div><div id="result"></div></div>';
   const others = othersField($('othersHost'));
-  return callBackend('picker', { scope: 'all' }).then(function (all) {
+  return cachedCall('picker', { scope: 'all' }, 30000).then(function (all) {
     const mine = all.filter(function (a) { return a.mine && a.st === 'AVAILABLE'; });
     const picker = createPicker($('pickHost'), { searchHost: $('chkSearch'), items: assetPickerItems(all, true), multi: true, placeholder: 'Search your assets…' });
     $('showAll').addEventListener('change', function () { picker.setItems(assetPickerItems(all, !$('showAll').checked)); });
@@ -820,7 +953,7 @@ function issueRow(i) {
 
 VIEWS.issues = function () {
   const openOnly = $('issueOpenOnly') ? $('issueOpenOnly').checked : true;
-  return callBackend('issues', { openOnly: openOnly }).then(function (list) {
+  return swr('issues', { openOnly: openOnly }, function (list) {
     const sel = new Set();
     const isAdmin = me.role === 'ADMIN';
     $('view').innerHTML = '<div class="card"><div class="stickyHead"><div class="row spread"><h2 style="margin:0">Issues</h2><div class="row">' + (isAdmin ? '<button class="linkBtn" id="issSelAll">Select all open</button>' : '') +
@@ -852,7 +985,7 @@ VIEWS.issue = function (preset) {
     '<div class="stickyHead"><label class="f">Devices and SD cards (type to search, tick to add)</label><div id="issSearch"></div></div><div id="pickHost"></div><div id="typeHost"></div>' +
     '<label class="f">What is wrong?</label><textarea id="desc"></textarea><div id="photoHost"></div><div class="row" style="margin-top:14px"><button class="btn" id="submitIssue">Report issue</button></div></div>';
   const photo = photoField($('photoHost'), 'Photo (recommended; used for all selected)');
-  return callBackend('picker').then(function (all) {
+  return cachedCall('picker', {}, 30000).then(function (all) {
     const byId = {}; all.forEach(function (a) { byId[a.id] = a; });
     const items = all.map(function (a) { return { id: a.id, label: (a.c === 'SD_CARD' ? 'SD card ' : '') + (a.t || ''), sub: a.h + ' · ' + a.loc }; });
     const paintTypes = function (ids) {
@@ -922,8 +1055,15 @@ const ASSIGNABLE = ['HOLDERLESS', 'CONFLICT', 'POSSIBLY_MISSING', 'CUSTODY_MISMA
 let flagFilter = '';
 
 VIEWS.flags = function () {
-  return Promise.all([callBackend('flags'), me.role === 'ADMIN' ? callBackend('supervisorList') : Promise.resolve([])]).then(function (r) {
-    const all = r[0]; supCache = r[1];
+  const people = me.role === 'ADMIN' ? cachedCall('supervisorList', {}, 300000) : Promise.resolve([]);
+  return people.then(function (sl) {
+    supCache = sl;
+    return swr('flags', {}, renderFlags);
+  });
+};
+
+function renderFlags(all) {
+  {
     const isAdmin = me.role === 'ADMIN';
     const types = Array.from(new Set(all.map(function (f) { return f.type; })));
     if (flagFilter && types.indexOf(flagFilter) === -1) flagFilter = '';
@@ -979,8 +1119,8 @@ VIEWS.flags = function () {
     });
     const selAll = $('flagSelAll');
     if (selAll) selAll.addEventListener('click', function () { document.querySelectorAll('[data-fsel]').forEach(function (c) { c.checked = true; sel.add(c.dataset.fsel); }); updateBar(); });
-  });
-};
+  }
+}
 
 // ---- Assets (admin) ----
 VIEWS.assets = function () {
