@@ -45,7 +45,7 @@ function catLabel(c) { return c === 'SD_CARD' ? 'SD card' : 'Device'; }
 // ===================== TRANSPORT =====================
 
 // Actions that only read. Everything else is a save, which wipes the screen memo below.
-const READS = { home: 1, picker: 1, search: 1, issues: 1, flags: 1, notifications: 1, supervisors: 1, properties: 1, supervisorList: 1, team: 1, assignments: 1, report: 1, options: 1, transfers: 1, pulse: 1, photoGet: 1, sync: 1 };
+const READS = { stays: 1, home: 1, picker: 1, search: 1, issues: 1, flags: 1, notifications: 1, supervisors: 1, properties: 1, supervisorList: 1, team: 1, assignments: 1, report: 1, options: 1, transfers: 1, pulse: 1, photoGet: 1, sync: 1 };
 const NO_MEMO = { search: 1, report: 1, photoGet: 1, pulse: 1, sync: 1, notifications: 1 };
 let memo = {};          // last answer for each read, so a screen can be drawn instantly while a fresh answer loads
 let memoEpoch = 0;      // bumped by every save, so an answer that was in flight during a save is not remembered
@@ -390,7 +390,7 @@ function startTab() {
 
 /** Warm the screens people open next, in the background, one at a time, so the tab switch is instant. */
 function prefetch() {
-  const plan = { SUPERVISOR: [['transfers', {}], ['team', {}], ['picker', {}]], ADMIN: [['transfers', {}], ['flags', {}], ['issues', { openOnly: true }], ['supervisorList', {}], ['picker', {}]], OPS: [['flags', {}], ['issues', { openOnly: true }]] }[me.role] || [];
+  const plan = { SUPERVISOR: [['stays', {}], ['transfers', {}], ['team', {}], ['picker', {}]], ADMIN: [['transfers', {}], ['flags', {}], ['issues', { openOnly: true }], ['supervisorList', {}], ['picker', {}]], OPS: [['flags', {}], ['issues', { openOnly: true }]] }[me.role] || [];
   let i = 0;
   (function next() {
     if (!me || i >= plan.length || document.hidden) return;
@@ -445,8 +445,8 @@ document.addEventListener('visibilitychange', function () { if (!document.hidden
 
 const TABS = {
   SUPERVISOR: [['home', 'Home'], ['team', 'Assign'], ['transfers', 'Transfers'], ['issue', 'Report issue'], ['search', 'Search']],
-  ADMIN: [['dash', 'Dashboard'], ['transfers', 'Transfers'], ['flags', 'Needs attention'], ['issues', 'Issues'], ['assets', 'Assets'], ['sups', 'Supervisors'], ['search', 'Search'], ['reports', 'Reports']],
-  OPS: [['dash', 'Dashboard'], ['flags', 'Needs attention'], ['issues', 'Issues'], ['search', 'Search'], ['reports', 'Reports']]
+  ADMIN: [['dash', 'Dashboard'], ['schedule', 'Schedule'], ['transfers', 'Transfers'], ['flags', 'Needs attention'], ['issues', 'Issues'], ['assets', 'Assets'], ['sups', 'Supervisors'], ['search', 'Search'], ['reports', 'Reports']],
+  OPS: [['dash', 'Dashboard'], ['schedule', 'Schedule'], ['flags', 'Needs attention'], ['issues', 'Issues'], ['search', 'Search'], ['reports', 'Reports']]
 };
 const PARENT_TAB = { newTransfer: 'transfers', checkin: 'home', alerts: null, property: 'dash' };
 
@@ -498,6 +498,7 @@ VIEWS.home = function () {
         (h.team.assignAlert ? h.team.unassignedDevices + ' device(s) not assigned to anyone yet. ' : '') +
         (h.team.dueConfirm ? h.team.dueConfirm + ' assignment(s) not confirmed for ' + OPTS.ui.confirmEveryHours + '+ hours.' : '') + '</div></div><button class="btn" data-go="team">Open Assign</button></div>';
     }
+    html += '<div id="stayBox"></div>';
     html += '<div class="card"><div class="row spread"><div><div class="muted small">You are at</div><h2 style="font-size:20px;margin:0">' + esc(h.locationName) + '</h2></div>' +
       '<div class="row"><button class="btn" data-act="send">Send assets</button><button class="btn secondary" data-act="issue">Report issue</button></div></div>' +
       '<div class="row" style="margin-top:10px">' + pill(devs.length + ' devices here', 'info') + pill(sds.length + ' SD cards here', 'info') +
@@ -544,6 +545,82 @@ VIEWS.home = function () {
     $('selShown').addEventListener('click', function () { visible().forEach(function (a) { homeSel.add(a.id); }); paintList(); updateBar(); });
     $('selNone').addEventListener('click', function () { homeSel.clear(); paintList(); updateBar(); });
     paintList(); updateBar();
+    const myNav = navId, hit = memo[memoKey('stays', {})];
+    const paintStays = function (s) { const box = $('stayBox'); if (box && myNav === navId) { box.innerHTML = staySection(s); wireStays(box); } };   // not swr: that would blank the whole screen while it loads
+    if (hit) paintStays(hit.data);
+    callBackend('stays').then(paintStays).catch(function () { /* optional: the rest of Home still works */ });
+  });
+};
+
+// ---- Property schedule (from the Actual_property_List tab) ----
+
+function telLink(p) { return p.tel ? '<a class="btn small" href="tel:' + esc(p.tel) + '">Call ' + esc(p.phone) + '</a><button class="btn secondary small" data-copy="' + esc(p.phone) + '">Copy</button>' : (p.phone ? '<span class="small">' + esc(p.phone) + '</span><button class="btn secondary small" data-copy="' + esc(p.phone) + '">Copy</button>' : ''); }
+
+function stayCard(s, withSup) {
+  const links = (s.mapUrl ? '<a class="btn small" href="' + esc(s.mapUrl) + '" target="_blank" rel="noopener">Open in Maps</a>' : '') +
+    (s.directionsUrl ? '<a class="btn secondary small" href="' + esc(s.directionsUrl) + '" target="_blank" rel="noopener">Directions</a>' : '') +
+    (s.listingUrl ? '<a class="btn secondary small" href="' + esc(s.listingUrl) + '" target="_blank" rel="noopener">Listing</a>' : '');
+  return '<div class="stay"><div class="row spread"><div class="t">' + esc(s.property) + '</div><div class="small muted">' + esc(s.start) + '</div></div>' +
+    (withSup ? '<div class="small muted">' + esc(s.supervisorName) + '</div>' : '') +
+    (s.address ? '<div class="small">' + esc(s.address) + '</div>' : '<div class="small muted">Address not added yet.</div>') +
+    (links ? '<div class="row stayBtns">' + links + '</div>' : '') +
+    (s.contacts.length ? s.contacts.map(function (c) {
+      return '<div class="contact"><div class="small"><b>' + esc(c.role) + '</b>' + (c.name ? ': ' + esc(c.name) : '') + '</div><div class="row stayBtns">' + telLink(c) + '</div></div>';
+    }).join('') : '<div class="small muted">No host or caretaker number added yet.</div>') +
+    (s.complete ? '' : '<div class="small muted">Some details are missing. Contact your manager to add them.</div>') + '</div>';
+}
+
+function staySection(s) {
+  if (!s.listed && !s.current.length && !s.next.length) return '<div class="card"><h2>Your property schedule</h2><div class="small muted">No property is scheduled for you yet. Contact your manager if you expected one.</div></div>';
+  const block = function (title, list, cls) {
+    return '<div class="stayBlock ' + (cls || '') + '"><h3>' + esc(title) + '</h3>' + (list.length ? list.map(function (x) { return stayCard(x); }).join('') : '<div class="small muted">Nothing scheduled.</div>') + '</div>';
+  };
+  let html = '<div class="card"><h2>Your property schedule</h2>' + block(s.titles.current, s.current, 'now') +
+    (s.phase === 'CHECKIN' && s.previous.length ? block(s.titles.previous, s.previous, 'prev') : '') +
+    block(s.titles.next, s.next, 'next');
+  if (s.history.length) {
+    html += '<details class="stayHist"><summary>Past properties (' + s.history.length + ')</summary>' + s.history.map(function (x) { return stayCard(x); }).join('') + '</details>';
+  }
+  return html + '</div>';
+}
+
+function copyText(text) {
+  const done = function () { toast('Copied ' + text); };
+  if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(text).then(done, function () { fallbackCopy(text, done); }); } else fallbackCopy(text, done);
+}
+function fallbackCopy(text, done) {
+  const t = document.createElement('textarea'); t.value = text; t.style.position = 'fixed'; t.style.opacity = '0'; document.body.appendChild(t); t.select();
+  try { document.execCommand('copy'); done(); } catch (e) { toast('Could not copy. Press and hold the number to copy it.', true); }
+  document.body.removeChild(t);
+}
+function wireStays(root) {
+  if (root._stayWired) return; root._stayWired = true;   // the box is repainted in place: listen once
+  root.addEventListener('click', function (e) { const b = e.target.closest('[data-copy]'); if (b) copyText(b.dataset.copy); });
+}
+
+// Admin / ops: where every supervisor is now and next, and the full history.
+VIEWS.schedule = function () {
+  return swr('stays', {}, function (s) {
+    const pick = function (arr) { return arr.length ? arr.map(function (x) { return '<div class="small"><b>' + esc(x.property) + '</b> <span class="muted">(' + esc(x.start) + ')</span></div>'; }).join('') : '<div class="small muted">None</div>'; };
+    let html = '<div class="card"><h2>Property schedule</h2><p class="small muted" style="margin:0 0 8px">Check-in is after ' + esc(s.checkinFrom) + ' (up to ' + esc(s.checkinBy) + '). Before then a supervisor is still at the previous property.</p>' +
+      s.supervisors.map(function (x) {
+        return '<div class="stay"><div class="t">' + esc(x.name) + '</div><div class="small muted">Now</div>' + pick(x.current) + '<div class="small muted" style="margin-top:6px">Next</div>' + pick(x.next) + '</div>';
+      }).join('') + '</div>';
+    if (s.unmatched.length) {
+      html += '<div class="card"><h2>Not linked to a supervisor (' + s.unmatched.length + ')</h2><p class="small muted" style="margin:0 0 6px">The supervisor on these rows does not match anyone in the user list. Ask the manager to correct the supervisor email.</p>' +
+        s.unmatched.map(function (u) { return '<div class="small">' + esc(u.property) + ' <span class="muted">(' + esc(u.start) + ', ' + esc(u.supervisor || 'no supervisor') + ')</span></div>'; }).join('') + '</div>';
+    }
+    const names = []; s.history.forEach(function (h) { if (names.indexOf(h.supervisorName) === -1) names.push(h.supervisorName); });
+    html += '<div class="card"><h2>Movement history</h2><div class="stickyHead"><select id="histSup" class="grow"><option value="">All supervisors</option>' +
+      names.sort().map(function (n) { return '<option>' + esc(n) + '</option>'; }).join('') + '</select></div><div id="histList"></div></div>';
+    $('view').innerHTML = html;
+    const paint = function () {
+      const f = $('histSup').value;
+      const rows = s.history.filter(function (h) { return !f || h.supervisorName === f; });
+      $('histList').innerHTML = rows.length ? rows.map(function (x) { return stayCard(x, true); }).join('') : emptyState('No past properties in this period.');
+    };
+    $('histSup').addEventListener('change', paint); paint();
+    wireStays($('view'));
   });
 };
 
