@@ -386,13 +386,17 @@ function startSession(withSync) {
  * Whenever the app is opened (or comes back to the front after a while) the phone's position is saved, replacing the
  * previous one. It is best effort: no permission, no GPS or a slow network just means nothing is saved, and nothing else depends on it.
  */
-let lastLocationAt = 0, hiddenAt = 0;
+let lastLocationAt = 0, hiddenAt = 0, stayPainter = null;   // stayPainter: redraws the schedule card on Home
 function recordLocation() {
   if (!me || !navigator.geolocation || Date.now() - lastLocationAt < 60000) return;
   lastLocationAt = Date.now();
   try {
     navigator.geolocation.getCurrentPosition(function (p) {
-      callBackend('saveLocation', { lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy }).catch(function () { /* optional */ });
+      callBackend('saveLocation', { lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy }).then(function () {
+        // Home was drawn before the position was saved, so its last-scan line used the OLD position: ask again now.
+        delete memo[memoKey('stays', {})];
+        if (tab === 'home' && stayPainter) callBackend('stays').then(stayPainter).catch(function () { /* keep what is shown */ });
+      }).catch(function () { /* optional */ });
     }, function () { /* denied or unavailable: fine */ }, { enableHighAccuracy: false, timeout: 10000, maximumAge: 60000 });
   } catch (e) { /* ignore */ }
 }
@@ -567,8 +571,12 @@ VIEWS.home = function () {
     paintList(); updateBar();
     const myNav = navId, hit = memo[memoKey('stays', {})];
     const paintStays = function (s) { const box = $('stayBox'); if (box && myNav === navId) { box.innerHTML = staySection(s); wireStays(box); } const sl = $('scanLine'); if (sl && myNav === navId) sl.innerHTML = scanLineHtml(s.scan, h); };   // not swr: that would blank the whole screen while it loads
+    stayPainter = paintStays;
     if (hit) paintStays(hit.data);
-    callBackend('stays').then(paintStays).catch(function () { /* optional: the rest of Home still works */ });
+    callBackend('stays').then(paintStays).catch(function (e) {   // the rest of Home still works; say so instead of waiting forever
+      const sl = $('scanLine'); if (sl && myNav === navId) sl.innerHTML = scanLineHtml({ failed: true, message: e && e.message ? e.message : '' }, h);
+      const box = $('stayBox'); if (box && myNav === navId && !box.innerHTML) box.innerHTML = '<div class="card"><h2>Your property schedule</h2><div class="small muted">Could not load the schedule' + (e && e.message ? ': ' + esc(e.message) : '') + '. <button class="linkBtn" data-go="home">Try again</button></div></div>';
+    });
   });
 };
 
@@ -577,12 +585,14 @@ VIEWS.home = function () {
 /** The "Location checked / Last scan" line on Home (the newer of the phone's saved location and the attendance scan). No distances are shown; the property name only appears when the scan matches the schedule. */
 function scanLineHtml(scan, h) {
   let title = 'Checking your last scan…', badge = '';
-  if (scan) {
+  if (scan && scan.failed) { title = 'Location status not available'; badge = pill('Try again in a moment', 'info'); }
+  else if (scan) {
     if (!scan.hasScan) title = 'No location or scan yet today';
     else {
       title = (scan.source === 'GPS' ? 'Location checked ' : 'Last scan ') + scan.time;
       if (scan.status === 'AT_PROPERTY') badge = pill('At ' + scan.property, 'ok');
       else if (scan.status === 'NOT_AT_PROPERTY') badge = pill('Not at your scheduled property', 'warn');
+      else if (scan.status === 'NO_SCHEDULE') badge = pill('No property scheduled for you', 'info');
     }
   }
   return '<div class="muted small">Attendance</div><h2 style="font-size:20px;margin:0">' + esc(title) + '</h2>' + (badge ? '<div style="margin-top:4px">' + badge + '</div>' : '') +
@@ -633,6 +643,15 @@ function wireStays(root) {
   root.addEventListener('click', function (e) { const b = e.target.closest('[data-copy]'); if (b) copyText(b.dataset.copy); });
 }
 
+/** Admin-only: what the status was worked out from, so a surprising answer can be explained. */
+function scanWhy(sc) {
+  const d = sc && sc.debug; if (!d) return '';
+  const cands = d.candidates.length ? d.candidates.map(function (c) {
+    return esc(c.property) + ' (starts ' + esc(c.start) + '): ' + (c.metersAway !== null ? c.metersAway + ' m away' : (c.lat === null ? 'property has no coordinates' : 'no coordinates on the position'));
+  }).join('; ') : 'no property to compare with right now';
+  return '<details class="small muted"><summary>Why</summary>Used the ' + (d.source === 'GPS' ? 'phone location' : 'attendance scan') + ' of ' + esc(d.time) + (d.lat !== null ? ' (' + d.lat + ', ' + d.lng + ')' : '') + '. Counts as at a property within ' + d.meters + ' m. ' + cands + '.</details>';
+}
+
 // Admin / ops: where every supervisor is now and next, and the full history.
 VIEWS.schedule = function () {
   return swr('stays', {}, function (s) {
@@ -640,7 +659,7 @@ VIEWS.schedule = function () {
     let html = '<div class="card"><h2>Property schedule</h2><p class="small muted" style="margin:0 0 8px">Check-in is after ' + esc(s.checkinFrom) + ' (up to ' + esc(s.checkinBy) + '). Before then a supervisor is still at the previous property.</p>' +
       s.supervisors.map(function (x) {
         const sc = x.scan || {}; const scanTxt = !sc.hasScan ? pill('No scan today', 'info') : (sc.status === 'AT_PROPERTY' ? pill('Scanned ' + sc.time + ' at ' + sc.property, 'ok') : sc.status === 'NOT_AT_PROPERTY' ? pill('Scanned ' + sc.time + ', not at scheduled property', 'warn') : pill('Scanned ' + sc.time, 'info'));
-        return '<div class="stay"><div class="row spread"><div class="t">' + esc(x.name) + '</div></div><div style="margin:4px 0">' + scanTxt + '</div><div class="small muted">Now</div>' + pick(x.current) + '<div class="small muted" style="margin-top:6px">Next</div>' + pick(x.next) + '</div>';
+        return '<div class="stay"><div class="row spread"><div class="t">' + esc(x.name) + '</div></div><div style="margin:4px 0">' + scanTxt + '</div>' + scanWhy(sc) + '<div class="small muted">Now</div>' + pick(x.current) + '<div class="small muted" style="margin-top:6px">Next</div>' + pick(x.next) + '</div>';
       }).join('') + '</div>';
     if (s.unmatched.length) {
       html += '<div class="card"><h2>Not linked to a supervisor (' + s.unmatched.length + ')</h2><p class="small muted" style="margin:0 0 6px">The supervisor on these rows does not match anyone in the user list. Ask the manager to correct the supervisor email.</p>' +
