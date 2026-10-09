@@ -45,8 +45,8 @@ function catLabel(c) { return c === 'SD_CARD' ? 'SD card' : 'Device'; }
 // ===================== TRANSPORT =====================
 
 // Actions that only read. Everything else is a save, which wipes the screen memo below.
-const READS = { stays: 1, home: 1, picker: 1, search: 1, issues: 1, flags: 1, notifications: 1, supervisors: 1, properties: 1, supervisorList: 1, team: 1, assignments: 1, report: 1, options: 1, transfers: 1, pulse: 1, photoGet: 1, sync: 1 };
-const NO_MEMO = { search: 1, report: 1, photoGet: 1, pulse: 1, sync: 1, notifications: 1 };
+const READS = { saveLocation: 1, stays: 1, home: 1, picker: 1, search: 1, issues: 1, flags: 1, notifications: 1, supervisors: 1, properties: 1, supervisorList: 1, team: 1, assignments: 1, report: 1, options: 1, transfers: 1, pulse: 1, photoGet: 1, sync: 1 };
+const NO_MEMO = { saveLocation: 1, search: 1, report: 1, photoGet: 1, pulse: 1, sync: 1, notifications: 1 };
 let memo = {};          // last answer for each read, so a screen can be drawn instantly while a fresh answer loads
 let memoEpoch = 0;      // bumped by every save, so an answer that was in flight during a save is not remembered
 let lastStamp = '';     // change detector from the 45-second pulse
@@ -372,6 +372,7 @@ function startSession(withSync) {
     updateBadge();
     if (withSync) setTimeout(backgroundSync, 300);
     setTimeout(prefetch, 900);
+    setTimeout(recordLocation, 1500);
   }).catch(function (e) {
     if (e.code === 'AUTH') return;                       // callBackend already signed out
     if (e.code === 'NOT_LISTED') { saveSession(''); $('view').classList.add('hidden'); showSignIn(e.message); return; }
@@ -380,6 +381,25 @@ function startSession(withSync) {
     if (!sessionToken) showSignIn(e.message);
   });
 }
+
+/**
+ * Whenever the app is opened (or comes back to the front after a while) the phone's position is saved, replacing the
+ * previous one. It is best effort: no permission, no GPS or a slow network just means nothing is saved, and nothing else depends on it.
+ */
+let lastLocationAt = 0, hiddenAt = 0;
+function recordLocation() {
+  if (!me || !navigator.geolocation || Date.now() - lastLocationAt < 60000) return;
+  lastLocationAt = Date.now();
+  try {
+    navigator.geolocation.getCurrentPosition(function (p) {
+      callBackend('saveLocation', { lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy }).catch(function () { /* optional */ });
+    }, function () { /* denied or unavailable: fine */ }, { enableHighAccuracy: false, timeout: 10000, maximumAge: 60000 });
+  } catch (e) { /* ignore */ }
+}
+document.addEventListener('visibilitychange', function () {
+  if (document.hidden) { hiddenAt = Date.now(); return; }
+  if (hiddenAt && Date.now() - hiddenAt > 10 * 60000) recordLocation();   // back after 10+ minutes counts as opening it again
+});
 
 function startTab() {
   let last = '';
@@ -499,7 +519,7 @@ VIEWS.home = function () {
         (h.team.dueConfirm ? h.team.dueConfirm + ' assignment(s) not confirmed for ' + OPTS.ui.confirmEveryHours + '+ hours.' : '') + '</div></div><button class="btn" data-go="team">Open Assign</button></div>';
     }
     html += '<div id="stayBox"></div>';
-    html += '<div class="card"><div class="row spread"><div><div class="muted small">You are at</div><h2 style="font-size:20px;margin:0">' + esc(h.locationName) + '</h2></div>' +
+    html += '<div class="card"><div class="row spread"><div id="scanLine">' + scanLineHtml(null, h) + '</div>' +
       '<div class="row"><button class="btn" data-act="send">Send assets</button><button class="btn secondary" data-act="issue">Report issue</button></div></div>' +
       '<div class="row" style="margin-top:10px">' + pill(devs.length + ' devices here', 'info') + pill(sds.length + ' SD cards here', 'info') +
       (devs.some(function (a) { return a.status !== 'WORKING'; }) ? pill('faulty devices', 'bad') : '') + '</div></div>';
@@ -546,13 +566,28 @@ VIEWS.home = function () {
     $('selNone').addEventListener('click', function () { homeSel.clear(); paintList(); updateBar(); });
     paintList(); updateBar();
     const myNav = navId, hit = memo[memoKey('stays', {})];
-    const paintStays = function (s) { const box = $('stayBox'); if (box && myNav === navId) { box.innerHTML = staySection(s); wireStays(box); } };   // not swr: that would blank the whole screen while it loads
+    const paintStays = function (s) { const box = $('stayBox'); if (box && myNav === navId) { box.innerHTML = staySection(s); wireStays(box); } const sl = $('scanLine'); if (sl && myNav === navId) sl.innerHTML = scanLineHtml(s.scan, h); };   // not swr: that would blank the whole screen while it loads
     if (hit) paintStays(hit.data);
     callBackend('stays').then(paintStays).catch(function () { /* optional: the rest of Home still works */ });
   });
 };
 
 // ---- Property schedule (from the Actual_property_List tab) ----
+
+/** The "Location checked / Last scan" line on Home (the newer of the phone's saved location and the attendance scan). No distances are shown; the property name only appears when the scan matches the schedule. */
+function scanLineHtml(scan, h) {
+  let title = 'Checking your last scan…', badge = '';
+  if (scan) {
+    if (!scan.hasScan) title = 'No location or scan yet today';
+    else {
+      title = (scan.source === 'GPS' ? 'Location checked ' : 'Last scan ') + scan.time;
+      if (scan.status === 'AT_PROPERTY') badge = pill('At ' + scan.property, 'ok');
+      else if (scan.status === 'NOT_AT_PROPERTY') badge = pill('Not at your scheduled property', 'warn');
+    }
+  }
+  return '<div class="muted small">Attendance</div><h2 style="font-size:20px;margin:0">' + esc(title) + '</h2>' + (badge ? '<div style="margin-top:4px">' + badge + '</div>' : '') +
+    '<div class="small muted" style="margin-top:4px">Assets shown are those at ' + esc(h.locationName) + '.</div>';
+}
 
 function telLink(p) { return p.tel ? '<a class="btn small" href="tel:' + esc(p.tel) + '">Call ' + esc(p.phone) + '</a><button class="btn secondary small" data-copy="' + esc(p.phone) + '">Copy</button>' : (p.phone ? '<span class="small">' + esc(p.phone) + '</span><button class="btn secondary small" data-copy="' + esc(p.phone) + '">Copy</button>' : ''); }
 
@@ -604,7 +639,8 @@ VIEWS.schedule = function () {
     const pick = function (arr) { return arr.length ? arr.map(function (x) { return '<div class="small"><b>' + esc(x.property) + '</b> <span class="muted">(' + esc(x.start) + ')</span></div>'; }).join('') : '<div class="small muted">None</div>'; };
     let html = '<div class="card"><h2>Property schedule</h2><p class="small muted" style="margin:0 0 8px">Check-in is after ' + esc(s.checkinFrom) + ' (up to ' + esc(s.checkinBy) + '). Before then a supervisor is still at the previous property.</p>' +
       s.supervisors.map(function (x) {
-        return '<div class="stay"><div class="t">' + esc(x.name) + '</div><div class="small muted">Now</div>' + pick(x.current) + '<div class="small muted" style="margin-top:6px">Next</div>' + pick(x.next) + '</div>';
+        const sc = x.scan || {}; const scanTxt = !sc.hasScan ? pill('No scan today', 'info') : (sc.status === 'AT_PROPERTY' ? pill('Scanned ' + sc.time + ' at ' + sc.property, 'ok') : sc.status === 'NOT_AT_PROPERTY' ? pill('Scanned ' + sc.time + ', not at scheduled property', 'warn') : pill('Scanned ' + sc.time, 'info'));
+        return '<div class="stay"><div class="row spread"><div class="t">' + esc(x.name) + '</div></div><div style="margin:4px 0">' + scanTxt + '</div><div class="small muted">Now</div>' + pick(x.current) + '<div class="small muted" style="margin-top:6px">Next</div>' + pick(x.next) + '</div>';
       }).join('') + '</div>';
     if (s.unmatched.length) {
       html += '<div class="card"><h2>Not linked to a supervisor (' + s.unmatched.length + ')</h2><p class="small muted" style="margin:0 0 6px">The supervisor on these rows does not match anyone in the user list. Ask the manager to correct the supervisor email.</p>' +
@@ -1213,7 +1249,7 @@ function renderDetail(d) {
 // ---- Flags ("needs attention") ----
 const FLAG_TITLES = {
   SHORT_RECEIPT: 'Short receipt', HOLDERLESS: 'No holder', CONFLICT: 'Custody conflict', POSSIBLY_MISSING: 'Possibly missing', CUSTODY_MISMATCH: 'Sent from a different holder',
-  PROVISIONAL_ASSET: 'Asset not in master list', CHECKIN_OVERDUE: 'Check-in overdue', STALE_TRANSIT: 'Stuck in transit', ASSET_MISSING: 'Reported missing', OFF_PLAN: 'Off planned movement'
+  PROVISIONAL_ASSET: 'Asset not in master list', CHECKIN_OVERDUE: 'Check-in overdue', STALE_TRANSIT: 'Stuck in transit', ASSET_MISSING: 'Reported missing', OFF_PLAN: 'Off planned movement', OFF_SCHEDULE: 'Not at scheduled property'
 };
 const ASSIGNABLE = ['HOLDERLESS', 'CONFLICT', 'POSSIBLY_MISSING', 'CUSTODY_MISMATCH'];
 
