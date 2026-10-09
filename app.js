@@ -448,7 +448,7 @@ const TABS = {
   ADMIN: [['dash', 'Dashboard'], ['transfers', 'Transfers'], ['flags', 'Needs attention'], ['issues', 'Issues'], ['assets', 'Assets'], ['sups', 'Supervisors'], ['search', 'Search'], ['reports', 'Reports']],
   OPS: [['dash', 'Dashboard'], ['flags', 'Needs attention'], ['issues', 'Issues'], ['search', 'Search'], ['reports', 'Reports']]
 };
-const PARENT_TAB = { newTransfer: 'transfers', checkin: 'home', alerts: null };
+const PARENT_TAB = { newTransfer: 'transfers', checkin: 'home', alerts: null, property: 'dash' };
 
 function buildTabs() {
   $('tabs').innerHTML = TABS[me.role].map(function (t) { return '<button data-tab="' + t[0] + '">' + t[1] + '</button>'; }).join('');
@@ -461,6 +461,7 @@ function go(t, keepScroll, arg) {
   teamDirty = false;
   setTopbarVar(); // the bar is taller once signed in (user label, alerts)
   tab = t; barClear();
+  const pop0 = $('comboPop'); if (pop0) pop0.classList.add('hidden');
   const mine = ++navId;
   try { if (me && TABS[me.role].some(function (x) { return x[0] === t; })) localStorage.setItem('at_tab_' + me.role, t); } catch (e) { /* ignore */ }
   const hl = PARENT_TAB[t] !== undefined ? PARENT_TAB[t] : t;
@@ -594,12 +595,51 @@ VIEWS.dash = function () {
       '<th class="num">Workforce</th><th class="num">Working devices</th><th class="num">Needed</th><th>Device gap</th><th class="num">Faulty</th><th class="num">SD cards</th><th class="num">SD needed</th><th>SD gap</th></tr></thead><tbody>' +
       d.properties.map(function (p) {
         const g = function (n) { return n < 0 ? '<span class="gap-neg">Short ' + (-n) + '</span>' : n > 0 ? '<span class="gap-pos">Surplus ' + n + '</span>' : 'OK'; };
-        return '<tr><td><b>' + esc(p.name) + '</b><div class="small muted">' + esc(p.locationId) + '</div></td><td>' + esc(p.supervisors.join(', ') || '-') + '</td><td class="num">' + p.workforce +
+        return '<tr class="clickrow" data-prop="' + esc(p.locationId) + '"><td><b>' + esc(p.name) + '</b> <span class="small" style="color:var(--brand)">details ›</span><div class="small muted">' + esc(p.locationId) + '</div></td><td>' + esc(p.supervisors.join(', ') || '-') + '</td><td class="num">' + p.workforce +
           '</td><td class="num">' + p.devicesWorking + '</td><td class="num">' + p.devicesRequired + '</td><td>' + g(p.deviceGap) + '</td><td class="num">' + p.devicesFaulty +
           '</td><td class="num">' + p.sdCards + '</td><td class="num">' + p.sdRequired + '</td><td>' + g(p.sdGap) + '</td></tr>';
       }).join('') + '</tbody></table></div>' +
       (d.unlocated ? '<p class="small muted">' + d.unlocated + ' asset(s) are with a supervisor whose location is not known yet, or at a property that is not in the list.</p>' : '') +
       '<p class="small muted">Workforce is today\'s attendance by Location ID. Only working devices count towards the requirement. ' + (me.role === 'ADMIN' ? '<button class="linkBtn" data-refreshcfg>Refresh settings</button> (settings are cached for a couple of minutes)' : '') + '</p></div>';
+    $('view').innerHTML = html;
+  });
+};
+
+// ---- One property in detail (admin / ops, opened from the dashboard) ----
+VIEWS.property = function (locationId) {
+  return swr('property', { locationId: locationId }, function (d) {
+    const c = d.counts;
+    const gap = function (n) { return n < 0 ? '<span class="gap-neg">Short ' + (-n) + '</span>' : n > 0 ? '<span class="gap-pos">Surplus ' + n + '</span>' : 'OK'; };
+    const tile = function (n, l, cls) { return '<div class="tile ' + (cls || '') + '" style="cursor:default"><div class="n">' + n + '</div><div class="l">' + l + '</div></div>'; };
+    const chipsOf = function (items) {
+      return items.length ? items.map(function (i) { return '<span class="chip">' + esc(i.assetId) + ' <span class="small">' + (i.category === 'SD_CARD' ? 'SD' : esc(i.subType || 'device')) + '</span></span>'; }).join(' ') : '<span class="small muted">nothing</span>';
+    };
+    const person = function (w) {
+      return '<tr><td><b>' + esc(w.name) + '</b>' + (w.email ? '<div class="small muted">' + esc(w.email) + '</div>' : '') +
+        (w.registered === false ? '<div style="margin-top:2px">' + pill('Not registered in the Awign app yet', 'warn') + '</div>' : '') + '</td>' +
+        '<td>' + chipsOf(w.items.filter(function (i) { return i.category === 'DEVICE'; })) + '</td><td>' + chipsOf(w.items.filter(function (i) { return i.category === 'SD_CARD'; })) + '</td></tr>';
+    };
+    const assetRows = function (list, showWorker) {
+      return list.length ? '<div class="tablewrap"><table><tbody>' + list.map(function (a) {
+        return '<tr><td><a href="#" data-asset="' + esc(a.id) + '"><b>' + esc(a.id) + '</b></a> <span class="muted">' + esc(a.subType || '') + '</span></td><td>' +
+          (showWorker && a.worker ? 'with <b>' + esc(a.worker) + '</b>' : '') + (a.issue ? '<span style="color:var(--bad)">' + esc(a.issue) + '</span>' : '') + '</td><td class="small muted">' + esc(a.holder) + '</td></tr>';
+      }).join('') + '</tbody></table></div>' : '<div class="small muted">None.</div>';
+    };
+    const section = function (title, cls, list, showWorker) { return '<h3>' + title + ' (' + list.length + ')</h3>' + assetRows(list, showWorker); };
+    let html = '<div class="stickyHead flat"><div class="row spread"><div><h2 style="margin:0">' + esc(d.name) + '</h2><div class="small muted">' + esc(d.locationId) + ' · ' +
+      (d.supervisors.length ? 'Supervisor: ' + d.supervisors.map(function (x) { return esc(x.name); }).join(', ') : 'no supervisor there now') + '</div></div><button class="btn secondary" data-go="dash">‹ Dashboard</button></div></div>';
+    html += '<div class="tiles">' + tile(c.workforce + (c.unregistered ? ' <span class="small">(' + c.unregistered + ' not registered)</span>' : ''), 'Workforce today') +
+      tile(c.devicesWorking + ' / ' + c.devicesRequired, 'Working devices / needed · ' + gap(c.deviceGap).replace(/<[^>]+>/g, ''), c.deviceGap < 0 ? 'bad' : '') +
+      tile(c.sdWorking + ' / ' + c.sdRequired, 'SD cards / needed · ' + gap(c.sdGap).replace(/<[^>]+>/g, ''), c.sdGap < 0 ? 'warn' : '') +
+      tile(d.devices.faulty.length + d.sdCards.faulty.length, 'Faulty (devices + SD)', d.devices.faulty.length + d.sdCards.faulty.length ? 'warn' : '') +
+      tile(d.devices.idle.length, 'Idle working devices') + tile(d.issues.length, 'Open issues', d.issues.length ? 'warn' : '') + '</div>';
+    if (d.withoutDevice.length) html += '<div class="banner warn"><div class="grow"><b>' + d.withoutDevice.length + ' present worker(s) have no device:</b> ' + d.withoutDevice.map(esc).join(', ') + '</div></div>';
+    html += '<div class="card"><h2>Workforce today, and what each person has</h2>' + (d.workforce.length ? '<div class="tablewrap"><table><thead><tr><th>Person</th><th>Device</th><th>SD cards</th></tr></thead><tbody>' + d.workforce.map(person).join('') + '</tbody></table></div>' : emptyState('Nobody has scanned in here today.')) +
+      (d.absentWithItems.length ? '<h3>Not scanned in today, still holding items</h3><div class="tablewrap"><table><tbody>' + d.absentWithItems.map(person).join('') + '</tbody></table></div>' : '') + '</div>';
+    html += '<div class="card"><h2>Devices</h2>' + section('Faulty', 'bad', d.devices.faulty) + section('Missing', 'bad', d.devices.missing) + section('Idle (working, nobody has it)', '', d.devices.idle) + section('Assigned', '', d.devices.assigned, true) + '</div>';
+    html += '<div class="card"><h2>SD cards</h2>' + section('Faulty', 'bad', d.sdCards.faulty) + section('Missing', 'bad', d.sdCards.missing) + section('Idle (working, nobody has it)', '', d.sdCards.idle) + section('Assigned', '', d.sdCards.assigned, true) + '</div>';
+    html += '<div class="card"><h2>Open issues and flags here</h2>' + (d.issues.length ? d.issues.map(function (i) { return '<div class="item"><div class="grow"><b>' + esc(i.assetId) + '</b> · ' + esc(i.type) + '<div class="small muted">' + esc(i.by) + ' · ' + fmt(i.at) + '</div></div>' + pill(i.status.replace('_', ' ').toLowerCase(), 'warn') + '</div>'; }).join('') : '<div class="small muted">No open issues.</div>') +
+      (d.flags.length ? '<h3>Flags</h3>' + d.flags.map(function (f) { return '<div class="item"><div class="grow"><b>' + esc(FLAG_TITLES[f.type] || f.type) + '</b> · ' + esc(f.detail) + '</div>' + pill(f.severity.toLowerCase(), f.severity === 'HIGH' ? 'bad' : f.severity === 'MEDIUM' ? 'warn' : 'info') + '</div>'; }).join('') : '') + '</div>';
     $('view').innerHTML = html;
   });
 };
@@ -628,7 +668,7 @@ VIEWS.team = function (preselect) {
       '<button class="btn secondary small" id="clearDev">Take all devices off</button><button class="btn secondary small" id="clearSd">Take all SD cards off</button></div>' +
       '<div class="small muted" id="freeLine" style="margin-top:6px"></div></div>' +
       '<div id="preBanner"></div><div id="wkGrid" class="wkgrid"></div>' +
-      '<datalist id="dl_DEVICE"></datalist><datalist id="dl_SD_CARD"></datalist>' +
+      '' +
       '<p class="small muted">Typing an item that is already with someone else moves it to this worker when you save. Assignments end automatically before the next shift starts.</p>';
     $('view').innerHTML = html;
     wireGrid(t, Array.isArray(preselect) ? preselect : []);
@@ -703,26 +743,24 @@ function wireGrid(t, preselect) {
     const n = cells[w][cat].length, goal = target[cat];
     return '<div class="slot"><div class="row spread"><b>' + (cat === 'SD_CARD' ? 'SD cards' : 'Device') + '</b><span class="count ' + (n >= goal ? 'ok' : 'warn') + '">' + n + ' / ' + goal + '</span></div>' +
       '<div class="chips">' + cells[w][cat].map(function (id) { return chip(w, id); }).join(' ') + ghost(w, cat) + (n ? '' : '<span class="small muted">none</span>') + '</div>' +
-      (canEdit ? '<div class="row"><input type="text" list="dl_' + cat + '" placeholder="Type ID…" data-in="' + esc(w + '|' + cat) + '" autocomplete="off" style="max-width:150px">' +
-        '<button class="btn secondary small" data-next="' + esc(w + '|' + cat) + '">+ next free</button></div>' : '') + '</div>';
+      // One box: type to filter OR tap the always-visible arrow to see the list (a native datalist hides its arrow in many browsers).
+      (canEdit ? '<div class="combo"><input type="text" class="comboIn" data-in="' + esc(w + '|' + cat) + '" placeholder="Type or pick an ID…" autocomplete="off">' +
+        '<button type="button" class="comboBtn" data-open="' + esc(w + '|' + cat) + '" aria-label="Show the list" title="Show the list">▾</button></div>' : '') + '</div>';
   };
 
   const paint = function () {
     const q = $('wFilter').value.trim().toLowerCase();
-    const list = order.filter(function (id) { return !q || (names[id].name + ' ' + id).toLowerCase().indexOf(q) !== -1; });
+    const list = order.filter(function (id) { return !q || (names[id].name + ' ' + id + ' ' + (names[id].email || '')).toLowerCase().indexOf(q) !== -1; });
     $('wkGrid').innerHTML = list.length ? list.map(function (id) {
       const w = names[id], ids = CATS.reduce(function (acc, c) { return acc.concat(baseline[id][c]); }, []).join(',');
-      return '<div class="wk' + (w.present ? '' : ' absent') + '"><div class="row spread"><div><b>' + esc(w.name) + '</b> <span class="small muted">' + esc(w.shift || '') + '</span>' +
-        (w.present ? '' : ' ' + pill('not marked present today', 'warn')) + '</div>' +
+      return '<div class="wk' + (w.present ? '' : ' absent') + '"><div class="row spread" style="align-items:flex-start"><div><b>' + esc(w.name) + '</b> <span class="small muted">' + esc(w.shift || '') + '</span>' +
+        (w.email ? '<div class="small muted">' + esc(w.email) + '</div>' : '') +
+        (w.registered === false ? '<div style="margin-top:3px">' + pill('Not registered in the Awign app yet', 'warn') + '</div>' : '') +
+        (w.present ? '' : '<div style="margin-top:3px">' + pill('not marked present today', 'warn') + '</div>') + '</div>' +
         (ids ? '<button class="linkBtn" data-confirmitems="' + esc(ids) + '">Still with them</button>' : '') + '</div>' +
         slot(id, 'DEVICE', w.present) + slot(id, 'SD_CARD', w.present) +
         (pre.length && w.present ? '<button class="btn small" data-give="' + esc(id) + '" style="margin-top:8px">Give the ' + pre.length + ' selected here</button>' : '') + '</div>';
     }).join('') : emptyState(t.workers.length ? 'No worker matches.' : 'No workers are marked present at your property yet today.');
-    ['DEVICE', 'SD_CARD'].forEach(function (c) {
-      $('dl_' + c).innerHTML = Object.keys(info).filter(function (id) { return info[id].category === c; }).sort(natural).map(function (id) {
-        return '<option value="' + esc(id) + '">' + esc((info[id].subType || '') + (info[id].was ? ' - now with ' + info[id].was : placedBy(id) ? ' - placed' : ' - free')) + '</option>';
-      }).join('');
-    });
     $('freeLine').textContent = 'Free with you: ' + freeItems('DEVICE').length + ' device(s), ' + freeItems('SD_CARD').length + ' SD card(s). Yellow counts mean a worker has fewer than the usual amount.';
     $('preBanner').innerHTML = pre.length ? '<div class="banner info"><div class="grow"><b>' + pre.length + ' item(s) picked on Home:</b> ' + pre.map(esc).join(', ') + '<div class="small">Tap “Give the selected here” on a worker.</div></div></div>' : '';
     const d = diff(), n = d.pairs.length + d.removed.length;
@@ -749,8 +787,66 @@ function wireGrid(t, preselect) {
     if (place(w, cat, id) && from && from !== w) toast(id + ' moved from ' + (names[from] || {}).name);
   };
 
+  // ----- the dropdown list (opens on focus, on typing, or on the arrow button; click an item to add it) -----
+  const pop = (function () {
+    let el = $('comboPop');
+    if (!el) { el = document.createElement('div'); el.id = 'comboPop'; el.className = 'comboPop hidden'; document.body.appendChild(el); }
+    return el;
+  })();
+  let comboKey = '';
+  const ownerLabel = function (id) {
+    const p = placedBy(id), o = p || owner[id];
+    return o ? (names[o] ? names[o].name : 'someone') : '';
+  };
+  const showCombo = function (key) {
+    const inp = document.querySelector('[data-in="' + key + '"]');
+    if (!inp) { pop.classList.add('hidden'); return; }
+    comboKey = key;
+    const parts = key.split('|'), w = parts[0], cat = parts[1];
+    const q = inp.value.trim().toLowerCase();
+    const max = OPTS.ui.pickerMax || 50;
+    const all = Object.keys(info).filter(function (id) {
+      return info[id].category === cat && cells[w][cat].indexOf(id) === -1 && (!q || (id + ' ' + (info[id].subType || '')).toLowerCase().indexOf(q) !== -1);
+    }).sort(function (x, y) {
+      const fx = ownerLabel(x) ? 1 : 0, fy = ownerLabel(y) ? 1 : 0;
+      return fx - fy || natural(x, y);                                   // free ones first
+    });
+    pop.innerHTML = all.length ? all.slice(0, max).map(function (id) {
+      const who = ownerLabel(id);
+      return '<div class="opt" data-pick="' + esc(id) + '"><span><b>' + esc(id) + '</b> <span class="small muted">' + esc(info[id].subType || '') + '</span></span>' +
+        (who ? pill('now with ' + who, 'info') : pill('free', 'ok')) + '</div>';
+    }).join('') + (all.length > max ? '<div class="small muted" style="padding:8px 12px">Showing ' + max + ' of ' + all.length + ' - keep typing to narrow down.</div>' : '')
+      : '<div class="small muted" style="padding:10px 12px">' + (q ? 'Nothing matches "' + esc(inp.value) + '".' : 'No ' + (cat === 'SD_CARD' ? 'SD cards' : 'devices') + ' to pick.') + '</div>';
+    const r = inp.closest('.combo').getBoundingClientRect();
+    const below = window.innerHeight - r.bottom;
+    pop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 280)) + 'px';
+    pop.style.width = Math.max(r.width, 260) + 'px';
+    if (below < 220 && r.top > below) { pop.style.top = 'auto'; pop.style.bottom = (window.innerHeight - r.top + 4) + 'px'; }
+    else { pop.style.bottom = 'auto'; pop.style.top = (r.bottom + 4) + 'px'; }
+    pop.classList.remove('hidden');
+  };
+  const hideCombo = function () { comboKey = ''; pop.classList.add('hidden'); };
+  pop.addEventListener('mousedown', function (e) { e.preventDefault(); });          // keep focus where it is while clicking an item
+  pop.addEventListener('click', function (e) {
+    const o = e.target.closest('[data-pick]'); if (!o || !comboKey) return;
+    const key = comboKey, parts = key.split('|');
+    add(parts[0], parts[1], o.dataset.pick); focusKey = ''; paint(); showCombo(key);   // stays open so several can be picked in a row
+  });
+  document.addEventListener('mousedown', function (e) {
+    if (pop.classList.contains('hidden')) return;
+    if (e.target.closest('.combo') || e.target.closest('#comboPop')) return;
+    hideCombo();
+  });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') hideCombo(); });
+  window.addEventListener('scroll', hideCombo, { passive: true });
+  window.addEventListener('resize', hideCombo);
+
   const grid = $('wkGrid');
+  grid.addEventListener('focusin', function (e) { const el = e.target.closest('[data-in]'); if (el) showCombo(el.dataset.in); });
+  grid.addEventListener('input', function (e) { const el = e.target.closest('[data-in]'); if (el) showCombo(el.dataset.in); });
   grid.addEventListener('keydown', function (e) {
+    const el0 = e.target.closest('[data-in]');
+    if (el0 && e.key === 'ArrowDown') { showCombo(el0.dataset.in); return; }
     const el = e.target.closest('[data-in]');
     if (!el || e.key !== 'Enter') return;
     e.preventDefault();
@@ -758,25 +854,16 @@ function wireGrid(t, preselect) {
     if (r.err) return r.err ? toast(r.err, true) : null;
     focusKey = el.dataset.in; add(p[0], p[1], r.id); paint();
   });
-  grid.addEventListener('change', function (e) {
-    const el = e.target.closest('[data-in]');
-    if (!el || !el.value.trim()) return;
-    const p = el.dataset.in.split('|'), r = resolve(el.value, p[1]);
-    if (r.err) { toast(r.err, true); return; }
-    focusKey = ''; add(p[0], p[1], r.id); paint();
-  });
   grid.addEventListener('click', function (e) {
-    const rm = e.target.closest('[data-rm]'), un = e.target.closest('[data-undo]'), nx = e.target.closest('[data-next]'), gv = e.target.closest('[data-give]');
-    if (rm) {
+    const rm = e.target.closest('[data-rm]'), un = e.target.closest('[data-undo]'), op = e.target.closest('[data-open]'), gv = e.target.closest('[data-give]');
+    if (op) {                                                           // the arrow: open/close the list for that box
+      if (comboKey === op.dataset.open && !pop.classList.contains('hidden')) hideCombo(); else showCombo(op.dataset.open);
+    } else if (rm) {
       e.preventDefault(); const p = rm.dataset.rm.split('|');
       CATS.forEach(function (c) { cells[p[0]][c] = cells[p[0]][c].filter(function (x) { return x !== p[1]; }); }); paint();
     } else if (un) {
       e.preventDefault(); const p = un.dataset.undo.split('|');
       add(p[0], info[p[1]].category, p[1]); paint();
-    } else if (nx) {
-      const p = nx.dataset.next.split('|'), free = freeItems(p[1]);
-      if (!free.length) return toast('No free ' + (p[1] === 'SD_CARD' ? 'SD cards' : 'devices') + ' left.', true);
-      focusKey = ''; add(p[0], p[1], free[0]); paint();
     } else if (gv) {
       pre.forEach(function (id) { add(gv.dataset.give, info[id].category, id); });
       pre = []; paint();
@@ -1234,7 +1321,7 @@ VIEWS.alerts = function () {
 // ===================== EVENTS =====================
 
 document.addEventListener('click', function (e) {
-  const t = e.target.closest('[data-tab],[data-go],[data-act],[data-receive],[data-cancel],[data-photo],[data-asset],[data-issue],[data-issue-for],[data-short],[data-ack],[data-assign],[data-dismiss],[data-report],[data-unassign],[data-confirmitems],[data-confirmall],[data-send-for],[data-bar],[data-refreshcfg],#bellBtn,#signOutBtn');
+  const t = e.target.closest('[data-tab],[data-go],[data-act],[data-receive],[data-cancel],[data-photo],[data-asset],[data-issue],[data-issue-for],[data-short],[data-ack],[data-assign],[data-dismiss],[data-report],[data-unassign],[data-confirmitems],[data-confirmall],[data-send-for],[data-bar],[data-refreshcfg],[data-prop],#bellBtn,#signOutBtn');
   if (!t) return;
   const d = t.dataset;
   if (t.id === 'bellBtn') return go('alerts');
@@ -1247,6 +1334,7 @@ document.addEventListener('click', function (e) {
   if (d.receive) return openReceive(d.receive);
   if (d.cancel) { if (confirm('Cancel this transfer? The assets return to the sender.')) callBackend('cancelTransfer', { transferId: d.cancel }).then(function () { toast('Cancelled'); go('transfers', true); }).catch(toastError); return; }
   if (d.photo) return viewPhoto(d.photo);
+  if (d.prop) return go('property', false, d.prop);
   if (d.issueFor) return go('issue', false, [d.issueFor]);
   if (d.sendFor) return go('newTransfer', false, [d.sendFor]);
   if (d.bar !== undefined) { const fn = barHandlers[d.bar]; if (fn) fn(); return; }
