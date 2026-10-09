@@ -157,3 +157,15 @@ select { -webkit-appearance: none; appearance: none; min-height: 40px; padding-r
 .comboPop .opt:hover { background: var(--info-bg); }
 tr.clickrow { cursor: pointer; }
 tr.clickrow:hover { background: var(--info-bg); }
+
+/* property schedule */
+a.btn { display: inline-block; text-decoration: none; text-align: center; }
+a.btn.small { padding: 5px 10px; font-size: 13px; }
+a.btn.secondary { background: transparent; color: var(--brand); border: 1px solid var(--line); }
+.stay { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
+.stay .t { font-weight: 700; }
+.stay .contact { margin-top: 8px; }
+.stayBtns { gap: 8px; margin-top: 6px; }
+.stayBlock h3 { margin: 12px 0 6px; }
+.stayBlock.now .stay { border-color: var(--brand); }
+.stayHist summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
