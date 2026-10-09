@@ -4,5 +4,7 @@
 const CONFIG = {
   APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbyQ7u0jbCKOmdomnJgtEaIQtbc7V_ahH_bFb2U_FXOZplCjYQiOWuWtT2Kg56gjIp7v/exec',
   GOOGLE_CLIENT_ID: '660338742485-sqot6puo2hu94u2pja2golkb2l6iu44v.apps.googleusercontent.com',
-  POLL_SECONDS: 45
+  POLL_SECONDS: 45,
+   HELP_DOC_URL: ''   // optional: link to the full User Guide document; shown at the bottom of the Help page when set
+
 };
