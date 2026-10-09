@@ -615,7 +615,7 @@ VIEWS.property = function (locationId) {
       return items.length ? items.map(function (i) { return '<span class="chip">' + esc(i.assetId) + ' <span class="small">' + (i.category === 'SD_CARD' ? 'SD' : esc(i.subType || 'device')) + '</span></span>'; }).join(' ') : '<span class="small muted">nothing</span>';
     };
     const person = function (w) {
-      return '<tr><td><b>' + esc(w.name) + '</b>' + (w.email ? '<div class="small muted">' + esc(w.email) + '</div>' : '') +
+      return '<tr><td><b>' + esc(w.name) + '</b>' +
         (w.registered === false ? '<div style="margin-top:2px">' + pill('Not registered in the Awign app yet', 'warn') + '</div>' : '') + '</td>' +
         '<td>' + chipsOf(w.items.filter(function (i) { return i.category === 'DEVICE'; })) + '</td><td>' + chipsOf(w.items.filter(function (i) { return i.category === 'SD_CARD'; })) + '</td></tr>';
     };
@@ -754,12 +754,13 @@ function wireGrid(t, preselect) {
     $('wkGrid').innerHTML = list.length ? list.map(function (id) {
       const w = names[id], ids = CATS.reduce(function (acc, c) { return acc.concat(baseline[id][c]); }, []).join(',');
       return '<div class="wk' + (w.present ? '' : ' absent') + '"><div class="row spread" style="align-items:flex-start"><div><b>' + esc(w.name) + '</b> <span class="small muted">' + esc(w.shift || '') + '</span>' +
-        (w.email ? '<div class="small muted">' + esc(w.email) + '</div>' : '') +
         (w.registered === false ? '<div style="margin-top:3px">' + pill('Not registered in the Awign app yet', 'warn') + '</div>' : '') +
-        (w.present ? '' : '<div style="margin-top:3px">' + pill('not marked present today', 'warn') + '</div>') + '</div>' +
+        '<div style="margin-top:3px">' +
+        (w.team ? pill('Your team', 'info') + ' ' : (w.assignable ? pill('Scanned in at this property', '') + ' ' : '')) +
+        (!w.assignable ? pill('not marked present today', 'warn') : (!w.present ? pill(w.elsewhere ? 'Scanned in at ' + w.elsewhere : 'Not scanned in yet today', 'warn') : '')) + '</div></div>' +
         (ids ? '<button class="linkBtn" data-confirmitems="' + esc(ids) + '">Still with them</button>' : '') + '</div>' +
-        slot(id, 'DEVICE', w.present) + slot(id, 'SD_CARD', w.present) +
-        (pre.length && w.present ? '<button class="btn small" data-give="' + esc(id) + '" style="margin-top:8px">Give the ' + pre.length + ' selected here</button>' : '') + '</div>';
+        slot(id, 'DEVICE', w.assignable) + slot(id, 'SD_CARD', w.assignable) +
+        (pre.length && w.assignable ? '<button class="btn small" data-give="' + esc(id) + '" style="margin-top:8px">Give the ' + pre.length + ' selected here</button>' : '') + '</div>';
     }).join('') : emptyState(t.workers.length ? 'No worker matches.' : 'No workers are marked present at your property yet today.');
     $('freeLine').textContent = 'Free with you: ' + freeItems('DEVICE').length + ' device(s), ' + freeItems('SD_CARD').length + ' SD card(s). Yellow counts mean a worker has fewer than the usual amount.';
     $('preBanner').innerHTML = pre.length ? '<div class="banner info"><div class="grow"><b>' + pre.length + ' item(s) picked on Home:</b> ' + pre.map(esc).join(', ') + '<div class="small">Tap “Give the selected here” on a worker.</div></div></div>' : '';
