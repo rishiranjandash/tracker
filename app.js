@@ -355,7 +355,7 @@ function startSession(withSync) {
     const h = r[0]; me = h; OPTS = r[1];
     $('signedOut').classList.add('hidden');
     $('tabs').classList.remove('hidden'); $('view').classList.remove('hidden');
-    $('bellBtn').classList.remove('hidden'); $('signOutBtn').classList.remove('hidden');
+    $('bellBtn').classList.remove('hidden'); $('signOutBtn').classList.remove('hidden'); $('helpBtn').classList.remove('hidden');
     activeRole = h.role; // the server may have fallen back from a stale remembered role
     // Only remember the choice for people who actually have a choice, so a single-role user on a shared device does not overwrite it.
     if (h.roles.length > 1) { try { localStorage.setItem('at_role', activeRole); } catch (e) { /* ignore */ } }
@@ -435,7 +435,7 @@ function backgroundSync() {
 function signOut() {
   saveSession(''); idToken = null; me = null; clearInterval(pollTimer); memo = {}; memoEpoch++;
   $('signedOut').classList.remove('hidden');
-  ['tabs', 'view', 'bellBtn', 'signOutBtn'].forEach(function (i) { $(i).classList.add('hidden'); });
+  ['tabs', 'view', 'bellBtn', 'signOutBtn', 'helpBtn'].forEach(function (i) { $(i).classList.add('hidden'); });
   $('userLabel').textContent = ''; $('roleSwitch').classList.add('hidden');
   barClear();
   if (window.google && google.accounts && google.accounts.id) google.accounts.id.disableAutoSelect();
@@ -472,7 +472,7 @@ const TABS = {
   ADMIN: [['dash', 'Dashboard'], ['schedule', 'Schedule'], ['transfers', 'Transfers'], ['flags', 'Needs attention'], ['issues', 'Issues'], ['assets', 'Assets'], ['sups', 'Supervisors'], ['search', 'Search'], ['reports', 'Reports']],
   OPS: [['dash', 'Dashboard'], ['schedule', 'Schedule'], ['flags', 'Needs attention'], ['issues', 'Issues'], ['search', 'Search'], ['reports', 'Reports']]
 };
-const PARENT_TAB = { newTransfer: 'transfers', checkin: 'home', alerts: null, property: 'dash' };
+const PARENT_TAB = { newTransfer: 'transfers', checkin: 'home', alerts: null, help: null, property: 'dash' };
 
 function buildTabs() {
   $('tabs').innerHTML = TABS[me.role].map(function (t) { return '<button data-tab="' + t[0] + '">' + t[1] + '</button>'; }).join('');
@@ -514,7 +514,7 @@ VIEWS.home = function () {
     let html = '';
     if (h.checkin) {
       html += '<div class="banner ' + (h.checkin.overdue ? 'bad' : 'warn') + '"><div class="grow"><b>' + (h.checkin.overdue ? 'Check-in overdue' : 'Check-in needed') +
-        '</b><div class="small">You moved to ' + esc(h.checkin.location) + '. List the assets you hold so we can match them to our records. You can keep working meanwhile.</div></div>' +
+        '</b><div class="small">You are at a new property. List the assets you hold so we can match them to our records. You can keep working meanwhile.</div></div>' +
         '<button class="btn" data-act="checkin">Check in now</button></div>';
     }
     if (h.team && (h.team.dueConfirm || h.team.assignAlert)) {
@@ -1297,8 +1297,8 @@ function renderFlags(all) {
       (flags.length ? flags.map(function (f) {
         const prov = isAdmin && f.type === 'PROVISIONAL_ASSET'
           ? '<div class="row" style="margin-top:8px"><input type="text" placeholder="Real asset ID (if known)" id="newid_' + esc(f.id) + '" style="max-width:200px"><button class="btn small" data-ack="' + esc(f.assetId) + '" data-flag="' + esc(f.id) + '">Acknowledge this one</button></div>' : '';
-        return '<div class="card flag ' + esc(f.severity) + '"><div class="row spread" style="align-items:flex-start">' + (isAdmin ? '<label class="selbox"><input type="checkbox" data-fsel="' + esc(f.id) + '"></label>' : '') +
-          '<div class="grow"><b>' + esc(FLAG_TITLES[f.type] || f.type) + '</b>' + (f.assetId ? ' · <a href="#" data-asset="' + esc(f.assetId) + '">' + esc(f.assetId) + '</a>' : '') + (f.refId ? ' · ' + esc(f.refId) : '') + '</div>' +
+        return '<div class="card flag ' + esc(f.severity) + '"><div class="row spread" style="align-items:flex-start">' + (isAdmin && !f.readonly ? '<label class="selbox"><input type="checkbox" data-fsel="' + esc(f.id) + '"></label>' : '') +
+          '<div class="grow"><b>' + esc(f.title || FLAG_TITLES[f.type] || f.type) + '</b>' + (f.assetId ? ' · <a href="#" data-asset="' + esc(f.assetId) + '">' + esc(f.assetId) + '</a>' : '') + (f.refId ? ' · ' + esc(f.refId) : '') + '</div>' +
           pill(f.severity.toLowerCase(), f.severity === 'HIGH' ? 'bad' : f.severity === 'MEDIUM' ? 'warn' : 'info') + '</div><div>' + esc(f.detail) + '</div><div class="small muted">' + fmt(f.at) + (f.location ? ' · ' + esc(f.location) : '') + '</div>' + prov + '</div>';
       }).join('') : '<div class="card">' + emptyState('Nothing needs attention.') + '</div>');
     $('flagType').addEventListener('change', function () { flagFilter = $('flagType').value; go('flags', true); });
@@ -1342,10 +1342,38 @@ function renderFlags(all) {
   }
 }
 
+// ---- Help (everyone) ----
+let helpFrom = '';
+VIEWS.help = function () {
+  if (tab !== 'help') helpFrom = tab;
+  const secs = helpSections(me.role);
+  const link = CONFIG.HELP_DOC_URL ? '<p class="small"><a href="' + esc(CONFIG.HELP_DOC_URL) + '" target="_blank" rel="noopener">Open the full User Guide</a></p>' : '';
+  $('view').innerHTML = '<div class="card"><div class="row spread"><h2 style="margin:0">Help</h2><button class="linkBtn" id="helpBack">Back</button></div>' +
+    '<div class="stickyHead"><input type="text" id="helpFilter" placeholder="Search help…" class="grow"></div>' +
+    '<div id="helpList">' + secs.map(function (s, i) { return '<details class="helpSec" data-i="' + i + '"><summary>' + esc(s.title) + '</summary><div class="helpBody">' + s.html + '</div></details>'; }).join('') + '</div>' +
+    '<div id="helpNone" class="small muted hidden">Nothing matches. Try a different word, or contact your manager.</div>' + link + '</div>';
+  $('helpBack').addEventListener('click', function () { go(helpFrom && helpFrom !== 'help' ? helpFrom : startTab()); });
+  $('helpFilter').addEventListener('input', function () {
+    const q = $('helpFilter').value.trim().toLowerCase();
+    let shown = 0;
+    document.querySelectorAll('#helpList .helpSec').forEach(function (d) {
+      const hit = !q || d.textContent.toLowerCase().indexOf(q) !== -1;
+      d.classList.toggle('hidden', !hit); if (hit) shown++;
+      if (q && hit) d.open = true;
+    });
+    $('helpNone').classList.toggle('hidden', shown > 0);
+  });
+  return Promise.resolve();
+};
+
 // ---- Assets (admin) ----
 VIEWS.assets = function () {
   $('view').innerHTML = '<div class="card"><h2>Add assets</h2><p class="small muted">One per line: <code>AssetID, DEVICE or SD_CARD, kind, serial, capacity</code>. New assets start in your custody at the Office. Existing IDs are skipped. For the first big import use <code>importAssetsFromTab()</code> in the script (see docs).</p>' +
-    '<textarea id="bulk" style="min-height:140px" placeholder="D401, DEVICE, Android Phone, SN12345,&#10;SD401, SD_CARD, 128GB, , 128GB"></textarea><div class="row" style="margin-top:10px"><button class="btn" id="addBulk">Add assets</button></div><div id="bulkResult" class="small"></div></div>';
+    '<textarea id="bulk" style="min-height:140px" placeholder="D401, DEVICE, Android Phone, SN12345,&#10;SD401, SD_CARD, 128GB, , 128GB"></textarea><div class="row" style="margin-top:10px"><button class="btn" id="addBulk">Add assets</button></div><div id="bulkResult" class="small"></div></div>' +
+    '<div class="card"><h2>Import from a CSV file</h2><p class="small muted">For many assets at once. Download the template, fill it in, then choose the file. You see a summary before anything is saved. Columns: AssetID, Category (DEVICE or SD_CARD), SubType, Serial, Capacity, HolderEmail (optional).</p>' +
+    '<div class="row"><button class="btn secondary" id="csvTemplate">Download CSV template</button><label class="btn" for="csvFile" style="margin:0">Choose CSV file</label><input type="file" id="csvFile" accept=".csv,text/csv" class="hidden"></div>' +
+    '<div id="csvPreview" class="small" style="margin-top:10px"></div></div>';
+  wireCsvImport();
   $('addBulk').addEventListener('click', function (e) {
     const rows = $('bulk').value.split('\n').map(function (l) { return l.trim(); }).filter(Boolean).map(function (l) {
       const p = l.split(',').map(function (x) { return x.trim(); });
@@ -1360,64 +1388,62 @@ VIEWS.assets = function () {
   });
 };
 
-// ---- Supervisors & plan (admin / ops) ----
-let planDraft = []; // movements added but not saved yet; survives tab switches
+/** Admin > Assets: download the template, choose a filled-in file, review, import. Nothing is saved until Import is tapped. */
+function wireCsvImport() {
+  let pending = [];
+  const download = function (name, text) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], { type: 'text/csv' })); a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+  };
+  $('csvTemplate').addEventListener('click', function () { download('asset-import-template.csv', assetCsvTemplate()); });
+  $('csvFile').addEventListener('change', function (e) {
+    const f = e.target.files && e.target.files[0]; if (!f) return;
+    const reader = new FileReader();
+    reader.onload = function () {
+      const res = assetRowsFromCsv(parseCsv(String(reader.result)));
+      pending = res.rows;
+      const prob = res.problems.length ? '<div style="margin-top:6px"><b>' + res.problems.length + ' row' + (res.problems.length > 1 ? 's' : '') + ' will be left out:</b><ul style="margin:4px 0 0 18px">' +
+        res.problems.slice(0, 15).map(function (p) { return '<li>' + esc(p) + '</li>'; }).join('') + (res.problems.length > 15 ? '<li>and ' + (res.problems.length - 15) + ' more</li>' : '') + '</ul></div>' : '';
+      $('csvPreview').innerHTML = '<div><b>' + esc(f.name) + ':</b> ' + pending.length + ' asset' + (pending.length === 1 ? '' : 's') + ' ready to import.</div>' + prob +
+        (pending.length ? '<div class="row" style="margin-top:10px"><button class="btn" id="csvImport">Import ' + pending.length + ' asset' + (pending.length === 1 ? '' : 's') + '</button></div><div id="csvResult" class="small" style="margin-top:8px"></div>' : '');
+      e.target.value = '';
+      const go2 = $('csvImport'); if (!go2) return;
+      go2.addEventListener('click', function () {
+        busy(go2, function () {
+          let added = 0; const skipped = [];
+          const chunks = []; for (let i = 0; i < pending.length; i += 150) chunks.push(pending.slice(i, i + 150));
+          return chunks.reduce(function (p, chunk) {
+            return p.then(function () { return callBackend('addAssets', { rows: chunk }).then(function (r) { added += r.added; r.skipped.forEach(function (s) { skipped.push(s); }); }); });
+          }, Promise.resolve()).then(function () {
+            pending = [];
+            $('csvResult').innerHTML = '<b>' + added + ' added.</b>' + (skipped.length ? ' <b>' + skipped.length + ' skipped:</b> ' + skipped.slice(0, 30).map(function (s) { return esc(s.id || '(blank)') + ' (' + esc(s.reason) + ')'; }).join(', ') + (skipped.length > 30 ? ' and ' + (skipped.length - 30) + ' more' : '') + '. <button class="linkBtn" id="csvSkipped">Download the skipped rows</button>' : '');
+            const sk = $('csvSkipped');
+            if (sk) sk.addEventListener('click', function () { download('skipped-assets.csv', [['AssetID', 'Reason']].concat(skipped.map(function (s) { return [s.id, s.reason]; })).map(function (r) { return r.map(csvQuote).join(','); }).join('\r\n') + '\r\n'); });
+            go2.classList.add('hidden'); toast(added + ' asset' + (added === 1 ? '' : 's') + ' added');
+          });
+        }).catch(toastError);
+      });
+    };
+    reader.readAsText(f);
+  });
+}
 
+// ---- Supervisors (admin / ops) ----
 VIEWS.sups = function () {
   return Promise.all([callBackend('supervisors'), callBackend('properties')]).then(function (r) {
     const sups = r[0], props = r[1];
-    let html = '<div class="card"><h2>Supervisor groups: where they are and where they are going</h2><p class="small muted">Current location comes from attendance logins. Planned moves are yours to set.</p>' + sups.map(function (s) {
-      return '<div class="item" style="align-items:flex-start"><div class="grow"><div class="t">' + esc(s.name) + ' <span class="muted">' + esc(s.id) + '</span></div><div class="small">Now at <b>' + esc(s.locationName) + '</b>' + (s.since ? ' since ' + fmt(s.since) : '') + '</div>' +
-        (s.planned.length ? '<div class="small">Planned: ' + s.planned.map(function (p) { return esc(p.locationName) + ' (' + esc(p.from) + (p.to ? ' → ' + esc(p.to) : '') + ')'; }).join('; ') + '</div>' : '') +
-        (s.history.length ? '<div class="small muted">History: ' + s.history.map(function (p) { return esc(p.locationName) + ' ' + esc(p.from) + (p.to ? '→' + esc(p.to) : '→now'); }).join(' · ') + '</div>' : '') + '</div>' + pill(s.status.toLowerCase(), s.status === 'ACTIVE' ? 'ok' : '') + '</div>';
+    let html = '<div class="card"><h2>Supervisors: where they are and what is next</h2><p class="small muted">Current location group comes from attendance. Upcoming properties come from the property schedule (see the Schedule tab); they are no longer entered here.</p>' + sups.map(function (s) {
+      return '<div class="item" style="align-items:flex-start"><div class="grow"><div class="t">' + esc(s.name) + ' <span class="muted">' + esc(s.id) + '</span></div><div class="small">Attendance location <b>' + esc(s.locationName) + '</b>' + (s.since ? ' since ' + fmt(s.since) : '') + '</div>' +
+        (s.planned.length ? '<div class="small">Upcoming: ' + s.planned.map(function (p) { return esc(p.locationName) + ' (' + esc(p.from) + ')'; }).join('; ') + '</div>' : '<div class="small muted">Nothing upcoming in the schedule.</div>') +
+        (s.history.length ? '<div class="small muted">Attendance history: ' + s.history.map(function (p) { return esc(p.locationName) + ' ' + esc(p.from) + (p.to ? '→' + esc(p.to) : '→now'); }).join(' · ') + '</div>' : '') + '</div>' + pill(s.status.toLowerCase(), s.status === 'ACTIVE' ? 'ok' : '') + '</div>';
     }).join('') + '</div>';
     if (me.role === 'ADMIN') {
-      html += '<div class="card"><h2>Plan moves</h2><p class="small muted">Add as many movements as you need, then save them together. Nothing is saved until you press <b>Save plan</b>.</p>' +
-        '<div class="fieldRow"><div><label class="f">Supervisor</label><select id="planSup">' + sups.map(function (s) { return '<option value="' + esc(s.id) + '">' + esc(s.name) + '</option>'; }).join('') + '</select></div>' +
-        '<div><label class="f">Property</label><select id="planLoc">' + props.map(function (p) { return '<option value="' + esc(p.id) + '">' + esc(p.name) + ' (' + esc(p.id) + ')</option>'; }).join('') + '</select></div>' +
-        '<div><label class="f">From</label><input type="date" id="planFrom"></div><div><label class="f">To (optional)</label><input type="date" id="planTo"></div></div>' +
-        '<div class="row" style="margin-top:10px"><button class="btn secondary" id="addMove">+ Add movement</button></div>' +
-        '<div id="planDraftHost"></div>' +
-        '<div class="row" style="margin-top:12px"><button class="btn" id="savePlan">Save plan</button><button class="btn secondary" id="clearPlan">Clear list</button></div></div>' +
-        '<div class="card"><h2>Rename a property</h2><p class="small muted">The Location ID never changes; the old name is kept in history.</p><div class="fieldRow"><div><label class="f">Property</label><select id="renLoc">' + props.map(function (p) { return '<option value="' + esc(p.id) + '">' + esc(p.name) + ' (' + esc(p.id) + ')</option>'; }).join('') + '</select></div>' +
+      html += '<div class="card"><h2>Rename a property</h2><p class="small muted">The Location ID never changes; the old name is kept in history.</p><div class="fieldRow"><div><label class="f">Property</label><select id="renLoc">' + props.map(function (p) { return '<option value="' + esc(p.id) + '">' + esc(p.name) + ' (' + esc(p.id) + ')</option>'; }).join('') + '</select></div>' +
         '<div><label class="f">New name</label><input type="text" id="renName"></div></div><div class="row" style="margin-top:10px"><button class="btn" id="renBtn">Rename</button></div></div>';
     }
     $('view').innerHTML = html;
     if (me.role !== 'ADMIN') return;
-    const supName = {}, propName = {};
-    sups.forEach(function (s) { supName[s.id] = s.name; });
-    props.forEach(function (p) { propName[p.id] = p.name; });
-    const paintDraft = function () {
-      $('planDraftHost').innerHTML = planDraft.length
-        ? '<div class="tablewrap" style="margin-top:10px"><table><thead><tr><th>#</th><th>Supervisor</th><th>Property</th><th>From</th><th>To</th><th></th></tr></thead><tbody>' +
-          planDraft.map(function (m, i) {
-            return '<tr><td>' + (i + 1) + '</td><td>' + esc(supName[m.supervisorId] || m.supervisorId) + '</td><td>' + esc(propName[m.locationId] || m.locationId) + '</td><td>' + esc(m.from) +
-              '</td><td>' + esc(m.to || 'open-ended') + '</td><td><button class="linkBtn" data-rmmove="' + i + '">Remove</button></td></tr>';
-          }).join('') + '</tbody></table></div>'
-        : '<p class="small muted" style="margin-top:10px">No movements added yet.</p>';
-      $('savePlan').textContent = 'Save plan' + (planDraft.length ? ' (' + planDraft.length + ' movement' + (planDraft.length > 1 ? 's' : '') + ')' : '');
-      $('savePlan').disabled = !planDraft.length; $('clearPlan').disabled = !planDraft.length;
-    };
-    paintDraft();
-    $('addMove').addEventListener('click', function () {
-      const m = { supervisorId: $('planSup').value, locationId: $('planLoc').value, from: $('planFrom').value, to: $('planTo').value };
-      if (!m.from) return toast('Choose a start date.', true);
-      if (m.to && m.to < m.from) return toast('The end date is before the start date.', true);
-      planDraft.push(m);
-      // Next row usually continues from this one: same supervisor, starting the day after it ends.
-      if (m.to) { const d = new Date(m.to + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + 1); $('planFrom').value = d.toISOString().slice(0, 10); $('planTo').value = ''; }
-      paintDraft();
-    });
-    $('planDraftHost').addEventListener('click', function (e) {
-      const b = e.target.closest('[data-rmmove]'); if (!b) return;
-      planDraft.splice(Number(b.dataset.rmmove), 1); paintDraft();
-    });
-    $('clearPlan').addEventListener('click', function () { planDraft = []; paintDraft(); });
-    $('savePlan').addEventListener('click', function (e) {
-      busy(e.target, function () {
-        return callBackend('addPlans', { plans: planDraft }).then(function (r) { planDraft = []; toast(r.saved + ' movement(s) saved'); go('sups', true); });
-      });
-    });
     $('renBtn').addEventListener('click', function (e) {
       busy(e.target, function () { return callBackend('renameProperty', { locationId: $('renLoc').value, name: $('renName').value }).then(function () { toast('Renamed'); go('sups', true); }); });
     });
@@ -1454,10 +1480,11 @@ VIEWS.alerts = function () {
 // ===================== EVENTS =====================
 
 document.addEventListener('click', function (e) {
-  const t = e.target.closest('[data-tab],[data-go],[data-act],[data-receive],[data-cancel],[data-photo],[data-asset],[data-issue],[data-issue-for],[data-short],[data-ack],[data-assign],[data-dismiss],[data-report],[data-unassign],[data-confirmitems],[data-confirmall],[data-send-for],[data-bar],[data-refreshcfg],[data-prop],#bellBtn,#signOutBtn');
+  const t = e.target.closest('[data-tab],[data-go],[data-act],[data-receive],[data-cancel],[data-photo],[data-asset],[data-issue],[data-issue-for],[data-short],[data-ack],[data-assign],[data-dismiss],[data-report],[data-unassign],[data-confirmitems],[data-confirmall],[data-send-for],[data-bar],[data-refreshcfg],[data-prop],#bellBtn,#signOutBtn,#helpBtn');
   if (!t) return;
   const d = t.dataset;
   if (t.id === 'bellBtn') return go('alerts');
+  if (t.id === 'helpBtn') return go('help');
   if (t.id === 'signOutBtn') return signOut();
   if (d.tab) return go(d.tab);
   if (d.go) return go(d.go);
