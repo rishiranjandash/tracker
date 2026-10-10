@@ -169,3 +169,15 @@ a.btn.secondary { background: transparent; color: var(--brand); border: 1px soli
 .stayBlock h3 { margin: 12px 0 6px; }
 .stayBlock.now .stay { border-color: var(--brand); }
 .stayHist summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
+
+/* help + csv import */
+.helpSec { border-bottom: 1px solid var(--line); padding: 4px 0; }
+.helpSec summary { cursor: pointer; font-weight: 600; padding: 8px 0; }
+.helpBody { padding: 0 0 10px; font-size: 14px; }
+.helpBody ul, .helpBody ol { margin: 6px 0 6px 18px; padding: 0; }
+.helpBody li { margin: 4px 0; }
+label.btn { display: inline-block; cursor: pointer; }
+
+/* one card per device on the Issues screen */
+.issueCard .issueLine { border-top: 1px solid var(--line); padding: 8px 0 2px; margin-top: 8px; }
+.issueCard .issueLine.closed { opacity: .65; }
