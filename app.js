@@ -125,26 +125,62 @@ function handleResult(res) {
 
 // ===================== PHOTOS =====================
 
-function resizeToBase64(file) {
+// Photos are shrunk on the phone BEFORE they are uploaded: about 1024 px on the long side, JPEG, aimed at <= 160 KB
+// (a 12 MP phone photo is 3-6 MB). Smaller uploads finish quickly even on a weak connection, so they no longer time out.
+const PHOTO_TARGETS = [[1024, 0.7], [1024, 0.55], [800, 0.55], [640, 0.5]];   // [longest side in px, JPEG quality], tried in order
+const PHOTO_TARGET_BYTES = 160 * 1024;
+const preparedPhotos = typeof WeakMap !== 'undefined' ? new WeakMap() : null;   // File -> the promise of its compressed copy (started when the photo is chosen)
+
+function loadImageSource(file) {
+  const viaTag = function () {
+    return new Promise(function (resolve, reject) {
+      const img = new Image(), url = URL.createObjectURL(file);
+      img.onload = function () { URL.revokeObjectURL(url); resolve(img); };
+      img.onerror = function () { URL.revokeObjectURL(url); reject(new Error('That file is not a readable image.')); };
+      img.src = url;
+    });
+  };
+  if (window.createImageBitmap) return createImageBitmap(file, { imageOrientation: 'from-image' }).catch(viaTag);   // keeps the photo the right way up
+  return viaTag();
+}
+function canvasToBlob(c, quality) {
+  return new Promise(function (resolve, reject) { c.toBlob(function (b) { if (b) resolve(b); else reject(new Error('Could not prepare the photo.')); }, 'image/jpeg', quality); });
+}
+function blobToBase64(b) {
   return new Promise(function (resolve, reject) {
-    const img = new Image();
-    const url = URL.createObjectURL(file);
-    img.onload = function () {
-      const max = 1280, scale = Math.min(1, max / Math.max(img.width, img.height));
+    const r = new FileReader();
+    r.onload = function () { resolve(String(r.result).split(',')[1]); };
+    r.onerror = function () { reject(new Error('Could not read the photo.')); };
+    r.readAsDataURL(b);
+  });
+}
+/** File -> { b64, bytes, w, h }: a small JPEG, upright, on a white background. */
+function compressPhoto(file) {
+  return loadImageSource(file).then(function (src) {
+    const sw = src.width, sh = src.height;
+    const render = function (edge, quality) {
+      const scale = Math.min(1, edge / Math.max(sw, sh));
       const c = document.createElement('canvas');
-      c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
-      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-      URL.revokeObjectURL(url);
-      resolve(c.toDataURL('image/jpeg', 0.8).split(',')[1]);
+      c.width = Math.max(1, Math.round(sw * scale)); c.height = Math.max(1, Math.round(sh * scale));
+      const ctx = c.getContext('2d'); ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, c.width, c.height); ctx.drawImage(src, 0, 0, c.width, c.height);
+      return canvasToBlob(c, quality).then(function (blob) { return { blob: blob, w: c.width, h: c.height }; });
     };
-    img.onerror = function () { reject(new Error('That file is not a readable image.')); };
-    img.src = url;
+    let n = 0;
+    const next = function () {
+      const t = PHOTO_TARGETS[n++];
+      return render(t[0], t[1]).then(function (r) { return (r.blob.size <= PHOTO_TARGET_BYTES || n >= PHOTO_TARGETS.length) ? r : next(); });
+    };
+    return next().then(function (r) {
+      if (src.close) src.close();
+      return blobToBase64(r.blob).then(function (b64) { return { b64: b64, bytes: r.blob.size, w: r.w, h: r.h }; });
+    });
   });
 }
 
 function uploadPhoto(kind, refLabel, file) {
   if (window.MOCK_UPLOAD) return Promise.resolve(window.MOCK_UPLOAD(file));
-  return resizeToBase64(file).then(function (b64) {
+  const prepared = (preparedPhotos && preparedPhotos.get(file)) || compressPhoto(file);
+  return prepared.then(function (p) {
     return new Promise(function (resolve, reject) {
       const reqId = 'u' + Date.now() + Math.random().toString(36).slice(2);
       const iframe = document.createElement('iframe');
@@ -153,7 +189,8 @@ function uploadPhoto(kind, refLabel, file) {
       form.method = 'POST'; form.action = CONFIG.APPS_SCRIPT_URL; form.target = iframe.name; form.style.display = 'none';
       const inp = document.createElement('input');
       inp.type = 'hidden'; inp.name = 'payload';
-      inp.value = JSON.stringify({ googleIdToken: idToken, kind: kind, refLabel: refLabel, mime: 'image/jpeg', base64: b64, requestId: reqId });
+      // the session token is what a signed-in device holds; the Google token alone is missing or too old on most devices
+      inp.value = JSON.stringify({ sessionToken: sessionToken || undefined, googleIdToken: sessionToken ? undefined : idToken, kind: kind, refLabel: refLabel, mime: 'image/jpeg', base64: p.b64, requestId: reqId });
       form.appendChild(inp);
       let timer;
       function finish() { clearTimeout(timer); window.removeEventListener('message', onMsg); iframe.remove(); form.remove(); }
@@ -165,9 +202,19 @@ function uploadPhoto(kind, refLabel, file) {
         if (m.result && m.result.ok) resolve(m.result.data.fileId); else reject(new Error((m.result && m.result.error) || 'Photo upload failed.'));
       }
       window.addEventListener('message', onMsg);
-      timer = setTimeout(function () { finish(); reject(new Error('Photo upload timed out. Try again on a better connection.')); }, 60000);
+      timer = setTimeout(function () { finish(); reject(new Error('The photo upload is taking too long.')); }, 90000);
       document.body.appendChild(iframe); document.body.appendChild(form); form.submit();
     });
+  });
+}
+
+/** Uploads the photo; if that fails the person may still send the report without it, so a weak connection never loses their work. */
+function uploadPhotoOrSkip(kind, refLabel, file) {
+  if (!file) return Promise.resolve('');
+  return uploadPhoto(kind, refLabel, file).catch(function (e) {
+    if (e && e.code === 'AUTH') throw e;
+    if (confirm((e && e.message ? e.message : 'The photo could not be uploaded.') + '\n\nSend without the photo?')) return '';
+    throw e;
   });
 }
 
@@ -180,6 +227,15 @@ function viewPhoto(fileId) {
 function photoField(host, label) {
   host.innerHTML = '<label class="f">' + esc(label || 'Photo (optional)') + '</label><input type="file" accept="image/*" capture="environment" id="photoInput"><div class="small muted" id="photoName"></div>';
   const input = host.querySelector('input');
+  // start shrinking as soon as the photo is chosen, while the person finishes the form
+  input.addEventListener('change', function () {
+    const f = input.files && input.files[0], note = host.querySelector('#photoName');
+    if (!f || window.MOCK_UPLOAD) { note.textContent = ''; return; }
+    note.textContent = 'Preparing the photo…';
+    const p = compressPhoto(f); if (preparedPhotos) preparedPhotos.set(f, p);
+    p.then(function (r) { if (input.files && input.files[0] === f) note.textContent = 'Photo ready (' + Math.max(1, Math.round(r.bytes / 1024)) + ' KB)'; })
+      .catch(function (e) { if (input.files && input.files[0] === f) note.textContent = e.message; });
+  });
   return { file: function () { return input.files && input.files[0] ? input.files[0] : null; } };
 }
 
@@ -1125,7 +1181,7 @@ VIEWS.newTransfer = function (preselect) {
       const dest = $('toSup').value, toOffice = dest === 'OFFICE';
       busy(e.target, function () {
         const f = photo.file();
-        return (f ? uploadPhoto('transfer', 'transfer', f) : Promise.resolve('')).then(function (fid) {
+        return uploadPhotoOrSkip('transfer', 'transfer', f).then(function (fid) {
           return callBackend('createTransfer', { toType: toOffice ? 'OFFICE' : 'SUPERVISOR', toId: toOffice ? '' : dest, assetIds: ids, others: oth, note: $('note').value, photoFileId: fid });
         }).then(function (res) { toast(res.itemCount + ' item(s) in transit · ' + res.transferId); go('transfers'); });
       });
@@ -1227,7 +1283,7 @@ VIEWS.issue = function (preset) {
       ['DEVICE', 'SD_CARD'].forEach(function (c) { if ($('type_' + c)) typeByCategory[c] = $('type_' + c).value; });
       busy(e.target, function () {
         const f = photo.file();
-        return (f ? uploadPhoto('issue', ids[0], f) : Promise.resolve('')).then(function (fid) {
+        return uploadPhotoOrSkip('issue', ids[0], f).then(function (fid) {
           return callBackend('reportIssues', { assetIds: ids, typeByCategory: typeByCategory, description: $('desc').value, photoFileId: fid });
         }).then(function (r) { homeSel.clear(); toast(r.count + ' issue(s) reported'); go(me.role === 'SUPERVISOR' ? 'home' : 'issues'); });
       });
