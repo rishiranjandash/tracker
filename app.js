@@ -583,7 +583,8 @@ VIEWS.home = function () {
       '<div class="row"><button class="btn" data-act="send">Send assets</button><button class="btn secondary" data-act="issue">Report issue</button></div></div>' +
       '<div class="row" style="margin-top:10px">' + pill(devs.length + ' devices here', 'info') + pill(sds.length + ' SD cards here', 'info') +
       (devs.some(function (a) { return a.status !== 'WORKING'; }) ? pill('faulty devices', 'bad') : '') + '</div></div>';
-    html += '<div class="card"><h2 style="margin:0">Assets at this property</h2>' +
+    html += '<div class="card"><h2 style="margin:0">Assets with your team</h2>' +
+      '<p class="small muted" style="margin:6px 0 0" id="assetScope">' + assetScopeText(h, null) + '</p>' +
       '<p class="small muted" style="margin:6px 0">Tap a device for its actions. Tick several to report an issue, send or assign them together.</p>' +
       '<div class="stickyHead"><div class="row"><input type="text" id="assetFilter" placeholder="Filter by ID, type or holder…" class="grow"><button class="linkBtn" id="selShown">Select all shown</button><button class="linkBtn" id="selNone">Clear</button></div></div>' +
       '<div id="assetList"></div></div>';
@@ -626,7 +627,12 @@ VIEWS.home = function () {
     $('selNone').addEventListener('click', function () { homeSel.clear(); paintList(); updateBar(); });
     paintList(); updateBar();
     const myNav = navId, hit = memo[memoKey('stays', {})];
-    const paintStays = function (s) { const box = $('stayBox'); if (box && myNav === navId) { box.innerHTML = staySection(s); wireStays(box); } const sl = $('scanLine'); if (sl && myNav === navId) sl.innerHTML = scanLineHtml(s.scan, h); };   // not swr: that would blank the whole screen while it loads
+    const paintStays = function (s) {
+      if (myNav !== navId) return;
+      const box = $('stayBox'); if (box) { box.innerHTML = staySection(s); wireStays(box); }
+      const sl = $('scanLine'); if (sl) sl.innerHTML = scanLineHtml(s.scan, h);
+      const sc = $('assetScope'); if (sc) sc.textContent = assetScopeText(h, s);
+    };   // not swr: that would blank the whole screen while it loads
     stayPainter = paintStays;
     if (hit) paintStays(hit.data);
     callBackend('stays').then(paintStays).catch(function (e) {   // the rest of Home still works; say so instead of waiting forever
@@ -639,6 +645,12 @@ VIEWS.home = function () {
 // ---- Property schedule (from the Actual_property_List tab) ----
 
 /** The "Location checked / Last scan" line on Home (the newer of the phone's saved location and the attendance scan). No distances are shown; the property name only appears when the scan matches the schedule. */
+/** The asset list is everything in the supervisor's location group; today's property (from the schedule) is shown beside it so people can tell which stay it means. */
+function assetScopeText(h, stays) {
+  const prop = stays && stays.current && stays.current.length ? stays.current.map(function (x) { return x.property; }).join(' / ') : '';
+  return 'Location group: ' + h.locationName + (prop ? '  ·  Today\'s property: ' + prop : '') + '. These are the assets recorded in your group, not only at one property.';
+}
+
 function scanLineHtml(scan, h) {
   let title = 'Checking your last scan…', badge = '';
   if (scan && scan.failed) { title = 'Location status not available'; badge = pill('Try again in a moment', 'info'); }
@@ -652,7 +664,7 @@ function scanLineHtml(scan, h) {
     }
   }
   return '<div class="muted small">Attendance</div><h2 style="font-size:20px;margin:0">' + esc(title) + '</h2>' + (badge ? '<div style="margin-top:4px">' + badge + '</div>' : '') +
-    '<div class="small muted" style="margin-top:4px">Assets shown are those at ' + esc(h.locationName) + '.</div>';
+    '';
 }
 
 function telLink(p) { return p.tel ? '<a class="btn small" href="tel:' + esc(p.tel) + '">Call ' + esc(p.phone) + '</a><button class="btn secondary small" data-copy="' + esc(p.phone) + '">Copy</button>' : (p.phone ? '<span class="small">' + esc(p.phone) + '</span><button class="btn secondary small" data-copy="' + esc(p.phone) + '">Copy</button>' : ''); }
@@ -869,12 +881,12 @@ function wireGrid(t, preselect) {
   const info = {}; t.assignable.forEach(function (a) { info[a.id] = { id: a.id, category: a.category, subType: a.subType, was: a.assignedTo }; });
   const owner = {}, cells = {}, order = [], names = {};
   t.workers.forEach(function (w) {
-    names[w.userId] = w; order.push(w.userId);
-    cells[w.userId] = { DEVICE: [], SD_CARD: [] };
+    names[w.workerId] = w; order.push(w.workerId);
+    cells[w.workerId] = { DEVICE: [], SD_CARD: [] };
     w.items.forEach(function (i) {
-      owner[i.assetId] = w.userId;
+      owner[i.assetId] = w.workerId;
       if (!info[i.assetId]) info[i.assetId] = { id: i.assetId, category: i.category, subType: i.subType, was: w.name };
-      (cells[w.userId][i.category] = cells[w.userId][i.category] || []).push(i.assetId);
+      (cells[w.workerId][i.category] = cells[w.workerId][i.category] || []).push(i.assetId);
     });
   });
   const baseline = JSON.parse(JSON.stringify(cells));
@@ -1080,8 +1092,9 @@ function wireGrid(t, preselect) {
 }
 
 // ---- Transfers ----
-// Same rule as the server: any admin for a transfer to the Office; only the named supervisor for a transfer to a supervisor.
+// Any admin for a transfer to the Office; the named supervisor or a supervisor at the same property for a transfer to a supervisor.
 function canReceive(t) {
+  if (t.canReceive !== undefined) return t.canReceive;   // the server decides (it knows who is at which property)
   if (t.toType === 'OFFICE') return me.role === 'ADMIN';
   return me.role === 'SUPERVISOR' && t.toType === 'SUPERVISOR' && t.toId === me.supervisorId;
 }
