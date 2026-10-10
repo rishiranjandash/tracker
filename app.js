@@ -1080,8 +1080,9 @@ function wireGrid(t, preselect) {
 }
 
 // ---- Transfers ----
+// Same rule as the server: any admin for a transfer to the Office; only the named supervisor for a transfer to a supervisor.
 function canReceive(t) {
-  if (me.role === 'ADMIN') return true;
+  if (t.toType === 'OFFICE') return me.role === 'ADMIN';
   return me.role === 'SUPERVISOR' && t.toType === 'SUPERVISOR' && t.toId === me.supervisorId;
 }
 
@@ -1100,6 +1101,7 @@ function transferCard(t) {
   if (t.note) html += '<div class="small">Note: ' + esc(t.note) + '</div>';
   html += '<div class="row" style="margin-top:8px">';
   if (t.status === 'IN_TRANSIT' && canReceive(t)) html += '<button class="btn small" data-receive="' + esc(t.id) + '">Confirm receipt</button>';
+  else if (t.status === 'IN_TRANSIT') html += '<span class="small muted">Waiting for ' + esc(t.to) + ' to confirm</span>';
   if (t.status === 'IN_TRANSIT' && (me.role === 'ADMIN' || t.sentBy === me.name)) html += '<button class="btn secondary small" data-cancel="' + esc(t.id) + '">Cancel</button>';
   if (t.photoFileId) html += '<button class="btn secondary small" data-photo="' + esc(t.photoFileId) + '">View photo</button>';
   return html + '</div></div>';
