@@ -604,7 +604,7 @@ VIEWS.home = function () {
         return '<div class="item"><label class="selbox"><input type="checkbox" data-sel="' + esc(a.id) + '"' + (homeSel.has(a.id) ? ' checked' : '') + '></label>' +
           '<div class="grow" data-menu="' + esc(a.id) + '" style="cursor:pointer"><div class="t">' + esc(a.id) + ' <span class="muted">' + esc(catLabel(a.category)) + ' ' + esc(a.subType) + '</span></div>' +
           '<div class="small muted">' + esc(a.holder) + (a.assignedTo ? ' · with ' + esc(a.assignedTo) : '') + '</div></div>' +
-          (a.provisional ? pill('awaiting admin', 'prov') : '') + (a.status !== 'WORKING' ? pill(a.status.toLowerCase(), 'bad') : '') + (a.state !== 'AVAILABLE' ? pill(a.state.toLowerCase().replace('_', ' '), 'warn') : '') + '</div>';
+          (a.provisional ? pill('awaiting admin', 'prov') : '') + (a.status !== 'WORKING' ? pill(a.status.toLowerCase(), 'bad') : '') + (a.openIssues ? pill('issue reported', 'warn') : '') + (a.state !== 'AVAILABLE' ? pill(a.state.toLowerCase().replace('_', ' '), 'warn') : '') + '</div>';
       }).join('') : emptyState(h.assets.length ? 'No match.' : 'No assets recorded at this property.');
     };
     barSet('<span id="barCount" class="grow"></span><button class="btn small" data-bar="issue">Report issue</button><button class="btn small" data-bar="send">Send</button>' +
@@ -756,7 +756,8 @@ function openAssetMenu(id) {
   openModal('<div class="row spread"><h2>' + esc(a.id) + ' <span class="muted" style="font-size:14px">' + esc(catLabel(a.category)) + ' ' + esc(a.subType) + '</span></h2><button class="linkBtn" data-close>Close</button></div>' +
     '<div class="row">' + pill(a.status.toLowerCase(), a.status === 'WORKING' ? 'ok' : 'bad') + (a.state !== 'AVAILABLE' ? pill(a.state.toLowerCase().replace('_', ' '), 'warn') : '') + (a.provisional ? pill('awaiting admin', 'prov') : '') + '</div>' +
     '<p class="small muted">' + esc(a.holder) + (a.assignedTo ? ' · using it today: ' + esc(a.assignedTo) : '') + '</p>' +
-    '<div class="menu"><button class="btn" data-m="issue">Report an issue</button>' +
+    (a.openTypes && a.openTypes.length ? '<div class="banner warn"><div class="grow"><b>Already reported:</b> ' + a.openTypes.map(esc).join(', ') + '. Admins know. There is no need to report it again.</div></div>' : '') +
+    '<div class="menu"><button class="btn' + (a.openTypes && a.openTypes.length ? ' secondary' : '') + '" data-m="issue">' + (a.openTypes && a.openTypes.length ? 'Report a different problem' : 'Report an issue') + '</button>' +
     '<button class="btn secondary" data-m="send"' + (free ? '' : ' disabled') + '>Send / put in transit</button>' +
     '<button class="btn secondary" data-m="assign"' + (canAssign ? '' : ' disabled') + '>Assign to a worker</button>' +
     '<button class="btn secondary" data-m="history">View full history</button>' +
@@ -1232,14 +1233,45 @@ VIEWS.checkin = function () {
 };
 
 // ---- Issues ----
-function issueRow(i) {
-  const closed = i.status === 'RESOLVED' || i.status === 'REPLACED';
-  const selectable = me.role === 'ADMIN' && !closed;
-  return '<div class="item" style="align-items:flex-start">' + (selectable ? '<label class="selbox"><input type="checkbox" data-isel="' + esc(i.id) + '"></label>' : '') +
-    '<div class="grow"><div class="t">' + esc(i.assetId) + ' · ' + esc(i.type) + '</div><div class="small muted">' + esc(i.location) + ' · ' + esc(i.by) + ' · ' + fmt(i.at) + '</div>' +
-    (i.description ? '<div class="small">' + esc(i.description) + '</div>' : '') + (i.resolution ? '<div class="small muted">Resolution: ' + esc(i.resolution) + '</div>' : '') +
-    (i.photoFileId ? '<div class="row" style="margin-top:6px"><button class="btn secondary small" data-photo="' + esc(i.photoFileId) + '">View photo</button></div>' : '') + '</div>' +
-    pill(i.status.replace('_', ' ').toLowerCase(), closed ? 'ok' : i.status === 'UNDER_REVIEW' ? 'info' : 'warn') + '</div>';
+/**
+ * ONE card per device. The same problem reported several times shows as a single line ("Screen Damage, 3 reports"), and every
+ * line of the device sits inside the same card, so nobody has to hunt through ten cards for one phone.
+ */
+function groupIssues(list) {
+  const cards = [], byAsset = {};
+  list.forEach(function (i) {
+    let c = byAsset[i.assetId];
+    if (!c) { c = byAsset[i.assetId] = { assetId: i.assetId, location: i.location, lines: [], byKey: {}, latest: i.at }; cards.push(c); }
+    if (i.at > c.latest) c.latest = i.at;
+    const open = !(i.status === 'RESOLVED' || i.status === 'REPLACED');
+    const k = i.type + '|' + (open ? i.status : 'CLOSED');
+    let ln = c.byKey[k];
+    if (!ln) { ln = c.byKey[k] = { type: i.type, status: i.status, open: open, ids: [], by: [], at: i.at, descriptions: [], photos: [], resolution: i.resolution, count: 0 }; c.lines.push(ln); }
+    ln.count++; ln.ids.push(i.id);
+    if (ln.by.indexOf(i.by) === -1) ln.by.push(i.by);
+    if (i.at > ln.at) ln.at = i.at;
+    if (i.description && ln.descriptions.indexOf(i.description) === -1) ln.descriptions.push(i.description);
+    if (i.photoFileId) ln.photos.push(i.photoFileId);
+  });
+  cards.forEach(function (c) { c.lines.sort(function (a, b) { return (b.open - a.open) || (a.at < b.at ? 1 : -1); }); c.openIds = []; c.lines.forEach(function (l) { if (l.open) l.ids.forEach(function (id) { c.openIds.push(id); }); }); });
+  return cards.sort(function (a, b) { return (b.openIds.length > 0) - (a.openIds.length > 0) || (a.latest < b.latest ? 1 : -1); });
+}
+
+function issueCard(c, selectable) {
+  const openLines = c.lines.filter(function (l) { return l.open; });
+  return '<div class="card issueCard"><div class="row spread" style="align-items:flex-start">' +
+    (selectable && c.openIds.length ? '<label class="selbox"><input type="checkbox" data-csel="' + esc(c.assetId) + '" data-ids="' + esc(c.openIds.join(',')) + '"></label>' : '') +
+    '<div class="grow"><div class="t" style="font-size:16px"><a href="#" data-asset="' + esc(c.assetId) + '">' + esc(c.assetId) + '</a></div><div class="small muted">' + esc(c.location) + '</div></div>' +
+    (openLines.length ? pill(openLines.length + (openLines.length > 1 ? ' problems open' : ' problem open'), 'warn') : pill('closed', 'ok')) + '</div>' +
+    c.lines.map(function (l) {
+      return '<div class="issueLine' + (l.open ? '' : ' closed') + '"><div class="row spread" style="align-items:flex-start"><div class="grow"><b>' + esc(l.type) + '</b>' +
+        (l.count > 1 ? ' <span class="pill info">' + l.count + ' reports</span>' : '') +
+        '<div class="small muted">' + esc(l.by.join(', ')) + ' · latest ' + fmt(l.at) + '</div>' +
+        l.descriptions.slice(0, 3).map(function (d) { return '<div class="small">“' + esc(d) + '”</div>'; }).join('') +
+        (l.resolution ? '<div class="small muted">Resolution: ' + esc(l.resolution) + '</div>' : '') +
+        (l.photos.length ? '<div class="row" style="margin-top:6px">' + l.photos.slice(0, 3).map(function (p, n) { return '<button class="btn secondary small" data-photo="' + esc(p) + '">Photo ' + (n + 1) + '</button>'; }).join('') + '</div>' : '') + '</div>' +
+        pill(l.status.replace('_', ' ').toLowerCase(), !l.open ? 'ok' : l.status === 'UNDER_REVIEW' ? 'info' : 'warn') + '</div></div>';
+    }).join('') + '</div>';
 }
 
 VIEWS.issues = function () {
@@ -1247,13 +1279,14 @@ VIEWS.issues = function () {
   return swr('issues', { openOnly: openOnly }, function (list) {
     const sel = new Set();
     const isAdmin = me.role === 'ADMIN';
-    $('view').innerHTML = '<div class="card"><div class="stickyHead"><div class="row spread"><h2 style="margin:0">Issues</h2><div class="row">' + (isAdmin ? '<button class="linkBtn" id="issSelAll">Select all open</button>' : '') +
+    const cards = groupIssues(list);
+    $('view').innerHTML = '<div class="stickyHead flat"><div class="row spread"><h2 style="margin:0">Issues <span class="muted" style="font-weight:400">(' + cards.length + ' device' + (cards.length === 1 ? '' : 's') + ')</span></h2><div class="row">' + (isAdmin ? '<button class="linkBtn" id="issSelAll">Select all open</button>' : '') +
       '<label class="small"><input type="checkbox" id="issueOpenOnly"' + (openOnly ? ' checked' : '') + '> Open only</label></div></div></div>' +
-      (isAdmin ? '<p class="small muted">Tick several issues to close or move them together with one note.</p>' : '') +
-      (list.length ? list.map(issueRow).join('') : emptyState('No issues.')) + '</div>';
+      (isAdmin ? '<p class="small muted">One card per device. Tick a device to deal with all its open problems at once.</p>' : '') +
+      (cards.length ? cards.map(function (c) { return issueCard(c, isAdmin); }).join('') : '<div class="card">' + emptyState('No issues.') + '</div>');
     $('issueOpenOnly').addEventListener('change', function () { go('issues', true); });
     if (!isAdmin) return;
-    const updateBar = function () { $('barCount') && ($('barCount').textContent = sel.size + ' selected'); barShow(sel.size > 0); };
+    const updateBar = function () { $('barCount') && ($('barCount').textContent = sel.size + ' issue(s) selected'); barShow(sel.size > 0); };
     const apply = function (status) {
       callBackend('updateIssues', { issueIds: Array.from(sel), status: status, resolution: $('barNote').value }).then(function (r) { toast(r.updated + ' issue(s) updated'); go('issues', true); }).catch(toastError);
     };
@@ -1261,24 +1294,40 @@ VIEWS.issues = function () {
       '<button class="btn secondary small" data-bar="review">Under review</button><button class="btn small" data-bar="resolved">Resolved</button><button class="btn secondary small" data-bar="replaced">Replaced</button>' +
       '<button class="btn secondary small" data-bar="clear">Clear</button>', {
       review: function () { apply('UNDER_REVIEW'); }, resolved: function () { apply('RESOLVED'); }, replaced: function () { apply('REPLACED'); },
-      clear: function () { sel.clear(); document.querySelectorAll('[data-isel]').forEach(function (c) { c.checked = false; }); updateBar(); }
+      clear: function () { sel.clear(); document.querySelectorAll('[data-csel]').forEach(function (c) { c.checked = false; }); updateBar(); }
     });
-    document.querySelectorAll('[data-isel]').forEach(function (c) {
-      c.addEventListener('change', function () { if (c.checked) sel.add(c.dataset.isel); else sel.delete(c.dataset.isel); updateBar(); });
+    document.querySelectorAll('[data-csel]').forEach(function (c) {
+      c.addEventListener('change', function () { c.dataset.ids.split(',').forEach(function (id) { if (c.checked) sel.add(id); else sel.delete(id); }); updateBar(); });
     });
-    $('issSelAll').addEventListener('click', function () { document.querySelectorAll('[data-isel]').forEach(function (c) { c.checked = true; sel.add(c.dataset.isel); }); updateBar(); });
+    $('issSelAll').addEventListener('click', function () { document.querySelectorAll('[data-csel]').forEach(function (c) { c.checked = true; c.dataset.ids.split(',').forEach(function (id) { sel.add(id); }); }); updateBar(); });
   });
 };
 
 VIEWS.issue = function (preset) {
   const pre = Array.isArray(preset) ? preset : (preset ? [preset] : []);
   $('view').innerHTML = '<div class="card"><h2>Report an issue</h2><p class="small muted">Pick one or several. If the problem is exactly the same on all of them, report them together.</p>' +
-    '<div class="stickyHead"><label class="f">Devices and SD cards (type to search, tick to add)</label><div id="issSearch"></div></div><div id="pickHost"></div><div id="typeHost"></div>' +
+    '<div class="stickyHead"><label class="f">Devices and SD cards (type to search, tick to add)</label><div id="issSearch"></div></div><div id="pickHost"></div><div id="dupHost"></div><div id="typeHost"></div>' +
     '<label class="f">What is wrong?</label><textarea id="desc"></textarea><div id="photoHost"></div><div class="row" style="margin-top:14px"><button class="btn" id="submitIssue">Report issue</button></div></div>';
   const photo = photoField($('photoHost'), 'Photo (recommended; used for all selected)');
   return cachedCall('picker', {}, 30000).then(function (all) {
     const byId = {}; all.forEach(function (a) { byId[a.id] = a; });
-    const items = all.map(function (a) { return { id: a.id, label: (a.c === 'SD_CARD' ? 'SD card ' : '') + (a.t || ''), sub: a.h + ' · ' + a.loc }; });
+    const items = all.map(function (a) { return { id: a.id, label: (a.c === 'SD_CARD' ? 'SD card ' : '') + (a.t || ''), sub: a.h + ' · ' + a.loc, badge: a.oi && a.oi.length ? pill('already reported', 'warn') : '' }; });
+    let allRepeats = false;
+    // What is already open on the chosen devices, against the type chosen now. Same type = a repeat that would do nothing.
+    const paintDups = function () {
+      const ids = picker ? picker.selected() : pre, same = [], other = [];
+      ids.forEach(function (id) {
+        const a = byId[id]; if (!a || !a.oi || !a.oi.length) return;
+        const sel = $('type_' + a.c) ? $('type_' + a.c).value : '';
+        if (a.oi.indexOf(sel) !== -1) same.push(id); else other.push(id + ' (' + a.oi.join(', ') + ')');
+      });
+      allRepeats = ids.length > 0 && same.length === ids.length;
+      $('dupHost').innerHTML = (same.length ? '<div class="banner bad"><div class="grow"><b>Already reported:</b> ' + same.map(esc).join(', ') + '. This problem is already open, so admins know. Reporting it again does nothing.</div></div>' : '') +
+        (other.length ? '<div class="banner warn"><div class="grow"><b>Already has another open problem:</b> ' + other.map(esc).join(', ') + '. Only report it if this is a different problem.</div></div>' : '');
+      const b = $('submitIssue'); b.disabled = allRepeats;
+      if (allRepeats) b.textContent = 'Already reported';
+      else b.textContent = ids.length > 1 ? 'Report issue on ' + ids.length + ' items' : 'Report issue';
+    };
     const paintTypes = function (ids) {
       const counts = { DEVICE: 0, SD_CARD: 0 };
       ids.forEach(function (id) { if (byId[id]) counts[byId[id].c]++; });
@@ -1287,9 +1336,11 @@ VIEWS.issue = function (preset) {
         return '<label class="f">Issue type for ' + counts[c] + ' ' + (c === 'SD_CARD' ? 'SD card' : 'device') + (counts[c] > 1 ? 's' : '') + '</label><select id="type_' + c + '">' +
           OPTS.issueTypes[c].map(function (t) { return '<option' + (t.value === prev ? ' selected' : '') + '>' + esc(t.value) + '</option>'; }).join('') + '</select>';
       }).join('');
-      $('submitIssue').textContent = ids.length > 1 ? 'Report issue on ' + ids.length + ' items' : 'Report issue';
+      paintDups();
     };
-    const picker = createPicker($('pickHost'), { searchHost: $('issSearch'), items: items, multi: true, selected: pre, placeholder: 'Search by ID…', onChange: paintTypes });
+    let picker = null;
+    picker = createPicker($('pickHost'), { searchHost: $('issSearch'), items: items, multi: true, selected: pre, placeholder: 'Search by ID…', onChange: paintTypes });
+    $('typeHost').addEventListener('change', paintDups);
     paintTypes(pre);
     $('submitIssue').addEventListener('click', function (e) {
       const ids = picker.selected();
@@ -1300,7 +1351,13 @@ VIEWS.issue = function (preset) {
         const f = photo.file();
         return uploadPhotoOrSkip('issue', ids[0], f).then(function (fid) {
           return callBackend('reportIssues', { assetIds: ids, typeByCategory: typeByCategory, description: $('desc').value, photoFileId: fid });
-        }).then(function (r) { homeSel.clear(); toast(r.count + ' issue(s) reported'); go(me.role === 'SUPERVISOR' ? 'home' : 'issues'); });
+        }).then(function (r) {
+          homeSel.clear(); memo = {};
+          const dup = (r.duplicates || []).length;
+          if (!r.count) { toast('Already reported. Nothing new was sent' + (dup ? ' (' + r.duplicates.map(function (d) { return d.assetId; }).join(', ') + ').' : '.'), true); go(me.role === 'SUPERVISOR' ? 'home' : 'issues'); return; }
+          toast(r.count + ' issue(s) reported' + (dup ? '. ' + dup + ' already reported, skipped.' : ''));
+          go(me.role === 'SUPERVISOR' ? 'home' : 'issues');
+        });
       });
     });
   });
