@@ -45,7 +45,7 @@ function catLabel(c) { return c === 'SD_CARD' ? 'SD card' : 'Device'; }
 // ===================== TRANSPORT =====================
 
 // Actions that only read. Everything else is a save, which wipes the screen memo below.
-const READS = { managerOverview: 1, saveLocation: 1, stays: 1, home: 1, picker: 1, search: 1, issues: 1, flags: 1, notifications: 1, supervisors: 1, properties: 1, supervisorList: 1, team: 1, assignments: 1, report: 1, options: 1, transfers: 1, pulse: 1, photoGet: 1, sync: 1 };
+const READS = { checkinList: 1, managerOverview: 1, saveLocation: 1, stays: 1, home: 1, picker: 1, search: 1, issues: 1, flags: 1, notifications: 1, supervisors: 1, properties: 1, supervisorList: 1, team: 1, assignments: 1, report: 1, options: 1, transfers: 1, pulse: 1, photoGet: 1, sync: 1 };
 const NO_MEMO = { saveLocation: 1, search: 1, report: 1, photoGet: 1, pulse: 1, sync: 1, notifications: 1 };
 let memo = {};          // last answer for each read, so a screen can be drawn instantly while a fresh answer loads
 let memoEpoch = 0;      // bumped by every save, so an answer that was in flight during a save is not remembered
@@ -571,7 +571,7 @@ VIEWS.home = function () {
     let html = '';
     if (h.checkin) {
       html += '<div class="banner ' + (h.checkin.overdue ? 'bad' : 'warn') + '"><div class="grow"><b>' + (h.checkin.overdue ? 'Check-in overdue' : 'Check-in needed') +
-        '</b><div class="small">You are at a new property. List the assets you hold so we can match them to our records. You can keep working meanwhile.</div></div>' +
+        '</b><div class="small">' + (h.checkin.old ? h.checkin.old + ' of your asset(s) are still recorded at your old property. ' : '') + (h.checkin.here ? h.checkin.here + ' asset(s) were already at ' + esc(h.checkin.location) + '. ' : '') + 'Tick the ones you have here so the records follow you. You can keep working meanwhile.</div></div>' +
         '<button class="btn" data-act="checkin">Check in now</button></div>';
     }
     if (h.team && (h.team.dueConfirm || h.team.assignAlert)) {
@@ -649,6 +649,8 @@ VIEWS.home = function () {
 /** The asset list is everything in the supervisor's location group; today's property (from the schedule) is shown beside it so people can tell which stay it means. */
 function assetScopeText(h, stays) {
   const prop = stays && stays.current && stays.current.length ? stays.current.map(function (x) { return x.property; }).join(' / ') : '';
+  const w = stays && stays.working;
+  if (w) return 'You are at: ' + w.locationName + (prop ? '  ·  Scheduled property: ' + prop : '') + '. ' + w.reason + ' These are the assets recorded at this location' + (h.elsewhere ? '; ' + h.elsewhere + ' of yours are still recorded at another one (Check in to bring them).' : '.');
   return 'Location group: ' + h.locationName + (prop ? '  ·  Today\'s property: ' + prop : '') + '. These are the assets recorded in your group, not only at one property.';
 }
 
@@ -660,6 +662,8 @@ function scanLineHtml(scan, h) {
     else {
       title = (scan.source === 'GPS' ? 'Location checked ' : 'Last scan ') + scan.time;
       if (scan.status === 'AT_PROPERTY') badge = pill('At ' + scan.property, 'ok');
+      else if (scan.status === 'AT_OTHER') badge = pill('You are at ' + scan.at.property + ', not your scheduled property', 'warn');
+      else if (scan.status === 'NO_MATCH') badge = pill('Not at any listed property', 'warn');
       else if (scan.status === 'NOT_AT_PROPERTY') badge = pill('Not at your scheduled property', 'warn');
       else if (scan.status === 'NO_SCHEDULE') badge = pill('No property scheduled for you', 'info');
     }
@@ -718,7 +722,8 @@ function scanWhy(sc) {
   const cands = d.candidates.length ? d.candidates.map(function (c) {
     return esc(c.property) + ' (starts ' + esc(c.start) + '): ' + (c.metersAway !== null ? c.metersAway + ' m away' : (c.lat === null ? 'property has no coordinates' : 'no coordinates on the position'));
   }).join('; ') : 'no property to compare with right now';
-  return '<details class="small muted"><summary>Why</summary>Used the ' + (d.source === 'GPS' ? 'phone location' : 'attendance scan') + ' of ' + esc(d.time) + (d.lat !== null ? ' (' + d.lat + ', ' + d.lng + ')' : '') + '. Counts as at a property within ' + d.meters + ' m. ' + cands + '.</details>';
+  const det = d.detected ? (d.detected.property ? ' Found at ' + esc(d.detected.property) + ' (' + esc(d.detected.locationId) + ', ' + d.detected.metersAway + ' m, the nearest active property).' : ' No active property is within the tolerance.') : '';
+  return '<details class="small muted"><summary>Why</summary>Used the ' + (d.source === 'GPS' ? 'phone location' : 'attendance scan') + ' of ' + esc(d.time) + (d.lat !== null ? ' (' + d.lat + ', ' + d.lng + ')' : '') + '. Counts as at a property within ' + d.meters + ' m. ' + cands + '.' + det + '</details>';
 }
 
 // Admin / ops: where every supervisor is now and next, and the full history.
@@ -727,8 +732,8 @@ VIEWS.schedule = function () {
     const pick = function (arr) { return arr.length ? arr.map(function (x) { return '<div class="small"><b>' + esc(x.property) + '</b> <span class="muted">(' + esc(x.start) + ')</span></div>'; }).join('') : '<div class="small muted">None</div>'; };
     let html = '<div class="card"><h2>Property schedule</h2><p class="small muted" style="margin:0 0 8px">Check-in is after ' + esc(s.checkinFrom) + ' (up to ' + esc(s.checkinBy) + '). Before then a supervisor is still at the previous property.</p>' +
       s.supervisors.map(function (x) {
-        const sc = x.scan || {}; const scanTxt = !sc.hasScan ? pill('No scan today', 'info') : (sc.status === 'AT_PROPERTY' ? pill('Scanned ' + sc.time + ' at ' + sc.property, 'ok') : sc.status === 'NOT_AT_PROPERTY' ? pill('Scanned ' + sc.time + ', not at scheduled property', 'warn') : pill('Scanned ' + sc.time, 'info'));
-        return '<div class="stay"><div class="row spread"><div class="t">' + esc(x.name) + '</div></div><div style="margin:4px 0">' + scanTxt + '</div>' + scanWhy(sc) + '<div class="small muted">Now</div>' + pick(x.current) + '<div class="small muted" style="margin-top:6px">Next</div>' + pick(x.next) + '</div>';
+        const sc = x.scan || {}; const scanTxt = !sc.hasScan ? pill('No scan today', 'info') : (sc.status === 'AT_OTHER' ? pill('Scanned ' + sc.time + ' at ' + sc.at.property + ' (not scheduled)', 'warn') : sc.status === 'NO_MATCH' ? pill('Scanned ' + sc.time + ', at no listed property', 'warn') : sc.status === 'AT_PROPERTY' ? pill('Scanned ' + sc.time + ' at ' + sc.property, 'ok') : sc.status === 'NOT_AT_PROPERTY' ? pill('Scanned ' + sc.time + ', not at scheduled property', 'warn') : pill('Scanned ' + sc.time, 'info'));
+        return '<div class="stay"><div class="row spread"><div class="t">' + esc(x.name) + '</div></div><div style="margin:4px 0">' + scanTxt + '</div>' + (x.working ? '<div class="small muted">Working location: ' + esc(x.working.locationName) + '. ' + esc(x.working.reason) + '</div>' : '') + scanWhy(sc) + '<div class="small muted">Now</div>' + pick(x.current) + '<div class="small muted" style="margin-top:6px">Next</div>' + pick(x.next) + '</div>';
       }).join('') + '</div>';
     if (s.unmatched.length) {
       html += '<div class="card"><h2>Not linked to a supervisor (' + s.unmatched.length + ')</h2><p class="small muted" style="margin:0 0 6px">The supervisor on these rows does not match anyone in the user list. Ask the manager to correct the supervisor email.</p>' +
@@ -1207,25 +1212,57 @@ VIEWS.newTransfer = function (preselect) {
 };
 
 // ---- Check-in ----
+/**
+ * Devices belong to a location. After a supervisor moves, this screen lists, separately and labelled:
+ *   - the assets they hold that are still recorded at their OLD property (tick the ones they have brought along),
+ *   - the assets already at THIS property that someone else holds (tick the ones they find here and take over),
+ *   - the assets they hold that are already recorded here (ticked to start with; untick anything that is not really with them).
+ * Anything not ticked stays where it was; a warning is shown before sending.
+ */
 VIEWS.checkin = function () {
-  $('view').innerHTML = '<div class="card"><div class="row spread"><h2>Check in your assets</h2><button class="linkBtn" data-go="home">Back</button></div>' +
-    '<p class="small muted">Tick every asset you physically have with you right now. We compare this with our records and flag anything that does not match. Nothing is blocked while you do this.</p>' +
-    '<div class="stickyHead"><div class="row"><button class="btn secondary small" id="tickMine">Tick everything the records say I hold</button></div>' +
-    '<div id="chkSearch" style="margin-top:8px"></div><label class="f" style="margin-bottom:0"><input type="checkbox" id="showAll"> Also search assets recorded with someone else</label></div>' +
-    '<div id="pickHost" style="margin-top:8px"></div><div id="othersHost"></div>' +
-    '<div class="row" style="margin-top:14px"><button class="btn" id="submitCheckin">Submit check-in</button></div><div id="result"></div></div>';
-  const others = othersField($('othersHost'));
-  return cachedCall('picker', { scope: 'all' }, 30000).then(function (all) {
-    const mine = all.filter(function (a) { return a.mine && a.st === 'AVAILABLE'; });
-    const picker = createPicker($('pickHost'), { searchHost: $('chkSearch'), items: assetPickerItems(all, true), multi: true, placeholder: 'Search your assets…' });
-    $('showAll').addEventListener('change', function () { picker.setItems(assetPickerItems(all, !$('showAll').checked)); });
-    $('tickMine').addEventListener('click', function () { picker.selectAll(mine.map(function (a) { return a.id; })); });
+  $('view').innerHTML = '<div class="card"><div class="row spread"><h2>Check in your assets</h2><button class="linkBtn" data-go="home">Back</button></div><div id="chkBody" class="small muted">Loading…</div></div>';
+  return callBackend('checkinList').then(function (c) {
+    const row = function (a, ticked) {
+      return '<label class="item" style="align-items:flex-start;cursor:pointer"><input type="checkbox" class="ck" data-id="' + esc(a.id) + '" data-g="' + a.group + '"' + (ticked ? ' checked' : '') + ' style="margin:4px 10px 0 0">' +
+        '<div class="grow"><b>' + esc(a.id) + '</b> <span class="small muted">' + esc(a.c === 'SD_CARD' ? 'SD card' : 'Device') + (a.t ? ' · ' + esc(a.t) : '') + '</span>' +
+        '<div class="small">' + (a.group === 'OLD' ? pill('From ' + a.at, 'warn') : (a.group === 'HERE' ? pill('Already here', 'info') + ' <span class="muted">with ' + esc(a.holder) + '</span>' : pill('With you', 'ok'))) +
+        (a.assigned ? ' ' + pill('handed out', '') : '') + '</div></div></label>';
+    };
+    const section = function (title, help, list, ticked, g) {
+      if (!list.length) return '';
+      return '<div style="margin-top:14px"><div class="row spread"><b>' + title + ' (' + list.length + ')</b><button class="linkBtn" data-all="' + g + '">Tick all</button></div>' +
+        '<p class="small muted" style="margin:2px 0 6px">' + help + '</p>' + list.map(function (a) { return row(a, ticked); }).join('') + '</div>';
+    };
+    if (c.location === 'UNKNOWN') { $('chkBody').innerHTML = '<div class="banner warn"><div class="grow">Your location is not known yet. Mark your attendance (or open the app at your property), then check in.</div></div>'; return; }
+    if (!c.old.length && !c.here.length && !c.mine.length) { $('chkBody').innerHTML = '<div class="banner info"><div class="grow">There is nothing to check in at <b>' + esc(c.locationName) + '</b>.</div><button class="btn small" data-go="home">Back</button></div>'; return; }
+    $('chkBody').className = '';
+    $('chkBody').innerHTML = '<p class="small muted">You are at <b>' + esc(c.locationName) + '</b>. Tick what you really have here. Nothing is blocked while you do this.</p>' +
+      (c.done ? '<div class="banner info"><div class="grow">You already checked in here today. You can check in again if something changed.</div></div>' : '') +
+      section('Brought from your old property', 'These are recorded at another property but with you. Tick the ones you brought here: they move to ' + esc(c.locationName) + ' and you stay their custodian.', c.old, false, 'OLD') +
+      section('Already at ' + esc(c.locationName) + ' before you came', 'These were here already, with someone else or with nobody. Tick the ones you find here: you become their custodian.', c.here, false, 'HERE') +
+      section('Already recorded here with you', 'Untick anything that is not really with you.', c.mine, true, 'MINE') +
+      '<div id="othersHost"></div><div class="row" style="margin-top:14px"><button class="btn" id="submitCheckin">Submit check-in</button></div><div id="result"></div>';
+    const others = othersField($('othersHost'));
+    document.querySelectorAll('[data-all]').forEach(function (btn) {
+      btn.addEventListener('click', function () { document.querySelectorAll('.ck[data-g="' + btn.getAttribute('data-all') + '"]').forEach(function (x) { x.checked = true; }); });
+    });
+    const names = function (list) { return list.slice(0, 6).join(', ') + (list.length > 6 ? ' and ' + (list.length - 6) + ' more' : ''); };
     $('submitCheckin').addEventListener('click', function (e) {
+      const ticked = [], left = { OLD: [], HERE: [], MINE: [] };
+      document.querySelectorAll('.ck').forEach(function (x) { (x.checked ? ticked : left[x.getAttribute('data-g')]).push(x.getAttribute('data-id')); });
+      if (left.HERE.length && !confirm('You have missed ' + left.HERE.length + ' asset(s) that were already at ' + c.locationName + ' before you arrived (' + names(left.HERE) + ').\n\nDo you really not have them at this property? If you leave them out they stay with the person they are recorded with.\n\nOK = send without them, Cancel = go back.')) return;
+      if (left.OLD.length && !confirm(left.OLD.length + ' asset(s) from your old property are not ticked (' + names(left.OLD) + ').\n\nThey stay recorded at the old property. If they are with you, go back and tick them.\n\nOK = send without them, Cancel = go back.')) return;
+      if (left.MINE.length && !confirm(left.MINE.length + ' asset(s) recorded here with you are not ticked (' + names(left.MINE) + '). They will be flagged for review.\n\nOK = send, Cancel = go back.')) return;
       busy(e.target, function () {
-        return callBackend('checkin', { assetIds: picker.selected(), others: others.values() }).then(function (r) {
-          $('result').innerHTML = '<div class="banner ' + (r.missing || r.conflicts ? 'warn' : 'info') + '" style="margin-top:12px"><div class="grow"><b>Check-in recorded.</b> Records expected ' + r.expected + ' asset(s). ' +
-            (r.missing ? r.missing + ' not declared (flagged for review). ' : '') + (r.conflicts ? r.conflicts + ' recorded with someone else (flagged). ' : '') + (r.claimed ? r.claimed + ' newly recorded with you.' : '') +
-            (!r.missing && !r.conflicts ? 'Everything matched.' : '') + '</div><button class="btn small" data-go="home">Done</button></div>';
+        return callBackend('checkin', { assetIds: ticked, others: others.values() }).then(function (r) {
+          const bits = [];
+          if (r.moved) bits.push(r.moved + ' brought here');
+          if (r.claimed) bits.push(r.claimed + ' taken over or added');
+          if (r.left) bits.push(r.left + ' left where they were (noted)');
+          if (r.missing) bits.push(r.missing + ' flagged for review');
+          if (r.unclaimed) bits.push(r.unclaimed + ' flagged to the admins (nobody had them at two check-ins)');
+          if (r.conflicts) bits.push(r.conflicts + ' recorded with someone else (flagged)');
+          $('result').innerHTML = '<div class="banner ' + (r.missing || r.conflicts || r.unclaimed ? 'warn' : 'info') + '" style="margin-top:12px"><div class="grow"><b>Check-in recorded.</b> ' + (bits.length ? esc(bits.join(' · ')) + '.' : 'Everything matched.') + '</div><button class="btn small" data-go="home">Done</button></div>';
           $('submitCheckin').classList.add('hidden');
         });
       });
@@ -1397,7 +1434,7 @@ function renderDetail(d) {
 // ---- Flags ("needs attention") ----
 const FLAG_TITLES = {
   SHORT_RECEIPT: 'Short receipt', HOLDERLESS: 'No holder', CONFLICT: 'Custody conflict', POSSIBLY_MISSING: 'Possibly missing', CUSTODY_MISMATCH: 'Sent from a different holder',
-  PROVISIONAL_ASSET: 'Asset not in master list', CHECKIN_OVERDUE: 'Check-in overdue', STALE_TRANSIT: 'Stuck in transit', ASSET_MISSING: 'Reported missing', OFF_PLAN: 'Off planned movement', OFF_SCHEDULE: 'Not at scheduled property'
+  PROVISIONAL_ASSET: 'Asset not in master list', CHECKIN_OVERDUE: 'Check-in overdue', STALE_TRANSIT: 'Stuck in transit', ASSET_MISSING: 'Reported missing', OFF_PLAN: 'Off planned movement', OFF_SCHEDULE: 'Not at scheduled property', CHECKIN_ASSET_UNCLAIMED: 'Left out of two check-ins'
 };
 const ASSIGNABLE = ['HOLDERLESS', 'CONFLICT', 'POSSIBLY_MISSING', 'CUSTODY_MISMATCH'];
 
@@ -1473,7 +1510,7 @@ function renderFlags(all) {
 
 // ---- Manager: edit the setup of the app (instead of opening the spreadsheet) ----
 let manageOpen = {};   // which sections are open, kept across redraws
-let teamFilter = '', stayFilter = '';
+let teamFilter = '', stayFilter = '', teamMode = 'active';
 // Edits saved to the source spreadsheet show here at once, until the app's own copy of the list (which re-imports a little later) catches up.
 const stayOverlay = {};   // identity of the row as it was in the copy -> { fields, at }
 
@@ -1644,17 +1681,31 @@ VIEWS.manage = function () {
     };
     const health = m.health.map(function (h) { return '<div class="banner ' + (h.level === 'bad' ? 'bad' : h.level === 'warn' ? 'warn' : '') + '" style="margin-bottom:8px;' + (h.level === 'ok' ? 'background:var(--ok-bg);color:var(--ok)' : h.level === 'info' ? 'background:var(--line);color:var(--muted)' : '') + '"><div class="grow small">' + esc(h.text) + '</div></div>'; }).join('');
     const issues = m.health.filter(function (h) { return h.level === 'bad' || h.level === 'warn'; }).length;
-    // team: search, then a supervisor picker per person
+    // team: search + filter, then for each person: who they REALLY report to, how that was decided, and where they scanned today
     const q = teamFilter.toLowerCase();
-    const people = m.team.filter(function (p) { return !q || (p.name + ' ' + p.email + ' ' + p.userId).toLowerCase().indexOf(q) !== -1; });
+    const mode = teamMode;
+    const people = m.team.filter(function (p) {
+      if (!p.active && mode !== 'all') return false;
+      if (mode === 'none' && p.how !== 'none' && p.how !== 'unknown-email' && p.how !== 'unknown' && p.how !== 'ambiguous') return false;
+      if (mode === 'name' && (p.typed || p.how === 'none' || p.how === 'email')) return false;
+      return !q || (p.name + ' ' + p.email + ' ' + p.userId + ' ' + p.effectiveName + ' ' + p.scanLocation).toLowerCase().indexOf(q) !== -1;
+    });
     const supOpts = function (cur) { return '<option value="">(no supervisor)</option>' + m.choices.supervisors.map(function (s) { return '<option value="' + esc(s.email) + '"' + (s.email === cur ? ' selected' : '') + '>' + esc(s.name) + '</option>'; }).join(''); };
-    const team = '<p class="small muted" style="margin:0 0 8px">Who each person reports to decides whose Assign screen they appear on. Pick a supervisor to change it.' + (m.canEditTeam ? '' : ' (Not available in this setup.)') + '</p>' +
-      '<input type="text" id="teamSearch" placeholder="Find a person…" value="' + esc(teamFilter) + '">' +
+    const howPill = function (p) {
+      if (p.how === 'none') return pill('no supervisor', 'warn');
+      if (p.how === 'unknown-email') return pill('Gmail is not an active supervisor', 'bad');
+      if (p.how === 'unknown' || p.how === 'ambiguous') return pill(p.howText, 'warn');
+      return p.typed ? pill('set by Gmail', 'ok') : pill('from the name "' + p.supervisor + '"', 'info');
+    };
+    const team = '<p class="small muted" style="margin:0 0 8px">Whose Assign screen each person appears on. This is worked out the same way the Assign screen does it: the typed supervisor Gmail first, then the supervisor name. Pick a supervisor to set it exactly.' + (m.canEditTeam ? '' : ' (Not available in this setup.)') + '</p>' +
+      '<div class="row" style="margin-bottom:6px"><input type="text" id="teamSearch" placeholder="Find a person, supervisor or place…" value="' + esc(teamFilter) + '" class="grow">' +
+      '<select id="teamMode" style="width:auto"><option value="active"' + (mode === 'active' ? ' selected' : '') + '>Active people</option><option value="none"' + (mode === 'none' ? ' selected' : '') + '>Needs fixing</option><option value="name"' + (mode === 'name' ? ' selected' : '') + '>Only via a name</option><option value="all"' + (mode === 'all' ? ' selected' : '') + '>Everyone</option></select></div>' +
       '<div class="small muted" style="margin:6px 0">' + people.length + ' of ' + m.team.length + ' people' + (people.length > 40 ? ' (showing 40: search to narrow)' : '') + '</div>' +
       people.slice(0, 40).map(function (p) {
-        const warn = !p.supervisorEmail ? ' ' + pill('no supervisor', 'warn') : (!p.supervisorName ? ' ' + pill('unknown supervisor', 'bad') : '');
-        return '<div class="item" style="align-items:flex-start"><div class="grow"><b>' + esc(p.name) + '</b>' + warn + '<div class="small muted">' + esc(p.email || p.userId) + '</div></div>' +
-          '<select data-team="' + esc(p.userId) + '" data-was="' + esc(p.supervisorEmail) + '" style="max-width:160px"' + (m.canEditTeam ? '' : ' disabled') + '>' + supOpts(p.supervisorEmail) + '</select></div>';
+        const scan = p.scanLocation ? 'Scanned today at <b>' + esc(p.scanLocation) + '</b> ' + esc(p.scanTime) : 'No scan today';
+        return '<div class="item" style="align-items:flex-start"><div class="grow"><b>' + esc(p.name) + '</b>' + (p.active ? '' : ' ' + pill('inactive', '')) + ' ' + howPill(p) +
+          '<div class="small muted">' + esc(p.email || p.userId) + '</div><div class="small">Reports to: <b>' + esc(p.effectiveName || 'nobody') + '</b></div><div class="small muted">' + scan + '</div></div>' +
+          '<select data-team="' + esc(p.userId) + '" data-was="' + esc(p.supervisorEmail) + '" style="max-width:150px"' + (m.canEditTeam ? '' : ' disabled') + '>' + supOpts(p.effectiveEmail) + '</select></div>';
       }).join('');
     const log = m.log.length ? m.log.map(function (c) {
       return '<div class="small" style="padding:6px 0;border-bottom:1px solid var(--line)"><b>' + esc(c.by) + '</b> · ' + fmt(c.at) + '<div>' + esc(c.tab) + ' ' + esc(c.key) + ' · ' + esc(c.field) + ': ' + (c.action === 'ADD' ? 'added ' + esc(c.newValue) : c.action === 'REMOVE' ? 'removed ' + esc(c.oldValue) : esc(c.oldValue || '(empty)') + ' → ' + esc(c.newValue || '(empty)')) + '</div></div>';
@@ -1692,6 +1743,8 @@ VIEWS.manage = function () {
       if (ss) ss.addEventListener('input', function () { stayFilter = ss.value; $('stayHost').innerHTML = manageStayList(m); wireStays(); const e = $('staySearch'); e.focus(); e.setSelectionRange(e.value.length, e.value.length); });
     };
     wireStays();
+    const tm = $('teamMode');
+    if (tm) tm.addEventListener('change', function () { teamMode = tm.value; manageOpen.team = true; go('manage', true); });
     const ts = $('teamSearch');
     if (ts) ts.addEventListener('input', function () { teamFilter = ts.value; manageOpen.team = true; VIEWS.manage(); document.getElementById('teamSearch').focus(); });
     view.querySelectorAll('[data-team]').forEach(function (s) {
