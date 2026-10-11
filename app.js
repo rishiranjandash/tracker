@@ -45,7 +45,7 @@ function catLabel(c) { return c === 'SD_CARD' ? 'SD card' : 'Device'; }
 // ===================== TRANSPORT =====================
 
 // Actions that only read. Everything else is a save, which wipes the screen memo below.
-const READS = { saveLocation: 1, stays: 1, home: 1, picker: 1, search: 1, issues: 1, flags: 1, notifications: 1, supervisors: 1, properties: 1, supervisorList: 1, team: 1, assignments: 1, report: 1, options: 1, transfers: 1, pulse: 1, photoGet: 1, sync: 1 };
+const READS = { managerOverview: 1, saveLocation: 1, stays: 1, home: 1, picker: 1, search: 1, issues: 1, flags: 1, notifications: 1, supervisors: 1, properties: 1, supervisorList: 1, team: 1, assignments: 1, report: 1, options: 1, transfers: 1, pulse: 1, photoGet: 1, sync: 1 };
 const NO_MEMO = { saveLocation: 1, search: 1, report: 1, photoGet: 1, pulse: 1, sync: 1, notifications: 1 };
 let memo = {};          // last answer for each read, so a screen can be drawn instantly while a fresh answer loads
 let memoEpoch = 0;      // bumped by every save, so an answer that was in flight during a save is not remembered
@@ -465,7 +465,7 @@ function startTab() {
   let last = '';
   try { last = localStorage.getItem('at_tab_' + me.role) || ''; } catch (e) { /* ignore */ }
   const ok = TABS[me.role].some(function (t) { return t[0] === last; });
-  return ok ? last : (me.role === 'SUPERVISOR' ? 'home' : 'dash');
+  return ok ? last : (me.role === 'SUPERVISOR' ? 'home' : me.role === 'MANAGER' ? 'manage' : 'dash');
 }
 
 /** Warm the screens people open next, in the background, one at a time, so the tab switch is instant. */
@@ -526,7 +526,8 @@ document.addEventListener('visibilitychange', function () { if (!document.hidden
 const TABS = {
   SUPERVISOR: [['home', 'Home'], ['team', 'Assign'], ['transfers', 'Transfers'], ['issue', 'Report issue'], ['search', 'Search']],
   ADMIN: [['dash', 'Dashboard'], ['schedule', 'Schedule'], ['transfers', 'Transfers'], ['flags', 'Needs attention'], ['issues', 'Issues'], ['assets', 'Assets'], ['sups', 'Supervisors'], ['search', 'Search'], ['reports', 'Reports']],
-  OPS: [['dash', 'Dashboard'], ['schedule', 'Schedule'], ['flags', 'Needs attention'], ['issues', 'Issues'], ['search', 'Search'], ['reports', 'Reports']]
+  OPS: [['dash', 'Dashboard'], ['schedule', 'Schedule'], ['flags', 'Needs attention'], ['issues', 'Issues'], ['search', 'Search'], ['reports', 'Reports']],
+  MANAGER: [['manage', 'Manage']]
 };
 const PARENT_TAB = { newTransfer: 'transfers', checkin: 'home', alerts: null, help: null, property: 'dash' };
 
@@ -1469,6 +1470,245 @@ function renderFlags(all) {
     if (selAll) selAll.addEventListener('click', function () { document.querySelectorAll('[data-fsel]').forEach(function (c) { c.checked = true; sel.add(c.dataset.fsel); }); updateBar(); });
   }
 }
+
+// ---- Manager: edit the setup of the app (instead of opening the spreadsheet) ----
+let manageOpen = {};   // which sections are open, kept across redraws
+let teamFilter = '', stayFilter = '';
+// Edits saved to the source spreadsheet show here at once, until the app's own copy of the list (which re-imports a little later) catches up.
+const stayOverlay = {};   // identity of the row as it was in the copy -> { fields, at }
+
+function stayIdentity(r) { return [r.property, r.start, r.end, r.locationId, r.supervisor, r.supervisorEmail].join('~'); }
+function stayEffective(r) {
+  const o = stayOverlay[stayIdentity(r)];
+  if (!o) return r;
+  if (Date.now() - o.at > 10 * 60000 || Object.keys(o.fields).every(function (k) { return r[k] === o.fields[k]; })) { delete stayOverlay[stayIdentity(r)]; return r; }   // the copy caught up (or too old to trust)
+  return Object.assign({}, r, o.fields, { _pending: true, _orig: r });
+}
+
+function manageStayForm(m, r) {
+  const L = m.propertyLinks;
+  let html = '<div class="row spread"><h2>Edit property details</h2><button class="linkBtn" data-close>Close</button></div>' +
+    '<div class="banner warn"><div class="grow small"><b>This changes the source spreadsheet</b> (' + esc(L.source) + '), not the app\'s copy. Only this one row, and only check-ins from today onward, can be edited.</div></div>' +
+    '<div class="small" style="margin:8px 0"><b>' + esc(r.start) + '</b> · ' + esc(r.locationId) + ' · supervisor ' + esc(r.supervisor || r.supervisorEmail || 'none') + (r.end ? ' · check-out ' + esc(r.end) : '') + '</div>';
+  L.fields.forEach(function (f) {
+    html += '<label class="f">' + esc(f.label) + (f.required ? '' : ' <span class="muted">(optional)</span>') + '</label><input type="text" id="sf_' + f.key + '" value="' + esc(r[f.key]) + '"' + (f.type === 'phone' ? ' inputmode="tel"' : '') + '>';
+  });
+  return html + '<div class="row" style="margin-top:14px"><button class="btn" id="sfSave">Save to the source</button><button class="btn secondary" data-close>Cancel</button></div><div class="small" id="sfMsg" style="margin-top:8px"></div>';
+}
+
+function manageOpenStay(m, r) {
+  openModal(manageStayForm(m, r), function (box) {
+    const msg = function (t, bad) { const e = box.querySelector('#sfMsg'); e.textContent = t; e.style.color = bad ? 'var(--bad)' : ''; };
+    box.querySelector('#sfSave').addEventListener('click', function (e) {
+      const changes = {}, expected = {};
+      m.propertyLinks.fields.forEach(function (f) { const v = box.querySelector('#sf_' + f.key).value; if (v.trim() !== String(r[f.key] || '').trim()) { changes[f.key] = v; expected[f.key] = r[f.key]; } });
+      if (!Object.keys(changes).length) { closeModal(); return; }
+      const match = { property: r.property, start: r.start, end: r.end, locationId: r.locationId, supervisor: r.supervisor, supervisorEmail: r.supervisorEmail };
+      busy(e.target, function () {
+        return callBackend('managerSaveStay', { match: match, changes: changes, expected: expected }).then(function (res) {
+          const orig = r._orig || r, fields = {};
+          Object.keys(changes).forEach(function (k) { fields[k] = changes[k].trim(); });
+          const prev = stayOverlay[stayIdentity(orig)];
+          stayOverlay[stayIdentity(orig)] = { fields: Object.assign({}, prev ? prev.fields : {}, fields), at: Date.now() };
+          closeModal(); toast(res.changed ? 'Saved to the source' : 'Nothing changed'); (res.notes || []).forEach(function (n) { setTimeout(function () { toast(n); }, 700); });
+          go('manage', true);
+        }).catch(function (err) { msg(err.message, true); });
+      });
+    });
+  });
+}
+
+function manageStayList(m) {
+  const L = m.propertyLinks, q = stayFilter.toLowerCase();
+  const rows = L.rows.map(stayEffective).filter(function (r) { return !q || [r.property, r.address, r.locationId, r.supervisor, r.hostName, r.caretakerName, r.start].join(' ').toLowerCase().indexOf(q) !== -1; });
+  let last = '';
+  return '<div class="banner ' + (L.enabled ? '' : 'warn') + '" style="margin-bottom:8px"><div class="grow small">' + (L.enabled ? '<b>Source:</b> ' + esc(L.source) + '. ' : '') + esc(L.note) + ' Showing check-ins from ' + esc(L.from) + ' onward. Earlier ones are never shown or edited.</div></div>' +
+    '<input type="text" id="staySearch" placeholder="Find a property, supervisor, date…" value="' + esc(stayFilter) + '">' +
+    '<div class="small muted" style="margin:6px 0">' + rows.length + ' of ' + L.rows.length + ' row(s)' + (rows.length > 60 ? ' (showing 60: search to narrow)' : '') + '</div>' +
+    rows.slice(0, 60).map(function (r, i) {
+      const head = r.start !== last ? '<h3 style="margin:12px 0 6px">Check-in ' + esc(r.start) + '</h3>' : ''; last = r.start;
+      return head + '<div class="item" style="align-items:flex-start"><div class="grow"><b>' + esc(r.property) + '</b> ' + (r._pending ? pill('saved, updating', 'info') : '') + '<div class="small">' + (esc(r.address) || '<span class="muted">No address</span>') + '</div>' +
+        '<div class="small">' + (r.link ? '<a href="' + esc(r.link) + '" target="_blank" rel="noopener">Open link</a>' : '<span class="muted">No link</span>') + '</div>' +
+        '<div class="small muted">Host: ' + esc(r.hostName || '-') + ' ' + esc(r.hostPhone) + ' · Caretaker: ' + esc(r.caretakerName || '-') + ' ' + esc(r.caretakerPhone) + '</div>' +
+        '<div class="small muted">' + esc(r.locationId) + ' · ' + esc(r.supervisor || r.supervisorEmail || 'no supervisor') + '</div></div>' +
+        (L.enabled ? '<button class="btn secondary small" data-stay="' + esc(stayIdentity(r._orig || r)) + '">Edit</button>' : '') + '</div>';
+    }).join('');
+}
+
+/** One short line per row, per list. */
+const MANAGE_ROW = {
+  Admins: function (v) { return '<b>' + esc(v.Name) + '</b> ' + pill(String(v.Role).toLowerCase(), 'info') + ' ' + manageStatus(v.Status) + '<div class="small muted">' + esc(v.Email) + '</div>'; },
+  Supervisors: function (v, m) { return '<b>' + esc(v.Name) + '</b> ' + manageStatus(v.Status) + '<div class="small muted">' + esc(v.Email) + (v.Phone ? ' · ' + esc(v.Phone) : '') + '</div><div class="small">Location group: ' + esc(manageProp(m, v.CurrentLocationID) || 'none') + '</div>'; },
+  Properties: function (v, m) { return '<b>' + esc(v.Name || '(no name)') + '</b> <span class="muted">' + esc(v.LocationID) + '</span> ' + manageStatus(v.Status) + '<div class="small">Supervisor: ' + esc(v.Supervisor || 'none') + '</div><div class="small muted">SD cards per worker: ' + esc(v.SDPerWorker || 'default') + ' · devices: ' + esc(v.DevicePerWorker || 'default') + '</div>'; },
+  Shift_Times: function (v) { return '<b>' + esc(v.Shift) + '</b><div class="small muted">Assignments end at ' + esc(v.DeassignTime) + '</div>'; },
+  Options: function (v) { return '<b>' + esc(v.Value) + '</b> ' + (v.Active === 'N' ? pill('hidden', '') : '') + '<div class="small muted">' + esc(v.Group) + (v.Effect ? ' · ' + esc(v.Effect) : '') + '</div>'; },
+  Config: function (v) { return '<b>' + esc(v.Key) + '</b>: ' + esc(v.Value || '(empty)') + '<div class="small muted">' + esc(v.Description) + '</div>'; }
+};
+function manageStatus(s) { return pill(String(s || '').toLowerCase(), s === 'ACTIVE' ? 'ok' : ''); }
+function manageProp(m, id) { if (!id) return ''; const p = m.choices.properties.find(function (x) { return x.id === id; }); return p ? p.name + ' (' + id + ')' : id; }
+
+function manageForm(m, tbl, row) {
+  const editing = !!row, v = row ? row.v : {};
+  const locked = row ? row.locked : [];
+  let html = '<div class="row spread"><h2>' + (editing ? 'Edit' : 'Add') + ' · ' + esc(tbl.title) + '</h2><button class="linkBtn" data-close>Close</button></div>';
+  tbl.columns.forEach(function (c) {
+    if (c.type === 'auto' && !editing) return;
+    const val = v[c.n] === undefined ? '' : v[c.n];
+    const isKey = tbl.keyCols.indexOf(c.n) !== -1;
+    const fixed = c.type === 'readonly' && !(tbl.table === 'Config' && c.n === 'Value') || c.type === 'auto';
+    if (fixed) { if (editing && val) html += '<div class="small muted" style="margin-top:8px">' + esc(c.label) + '</div><div>' + esc(val) + '</div>'; return; }
+    const lockedCell = locked.indexOf(c.n) !== -1, off = lockedCell || (editing && isKey);
+    html += '<label class="f">' + esc(c.label) + (c.required && !c.allowBlank ? '' : ' <span class="muted">(optional)</span>') + '</label>';
+    const id = 'mf_' + c.n;
+    if (c.type === 'enum' || c.type === 'supervisor') {
+      let opts;
+      if (c.type === 'supervisor') opts = [['', '(no supervisor)']].concat(m.choices.supervisors.map(function (s) { return [s.email, s.name]; }));
+      else if (c.n === 'CurrentLocationID') opts = [['', '(none)']].concat(m.choices.properties.map(function (p) { return [p.id, p.name + ' (' + p.id + ')']; }));
+      else opts = c.values.map(function (x) { return [x, x || '(none)']; });
+      html += '<select id="' + id + '"' + (off ? ' disabled' : '') + '>' + opts.map(function (o) { return '<option value="' + esc(o[0]) + '"' + (String(o[0]).toLowerCase() === String(val).toLowerCase() ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join('') + '</select>';
+    } else if (tbl.table === 'Options' && c.n === 'Effect') {
+      html += '<select id="' + id + '"' + (off ? ' disabled' : '') + '></select><div class="small muted" id="mf_effect_hint"></div>';
+    } else {
+      html += '<input type="' + (c.type === 'email' ? 'email' : 'text') + '" id="' + id + '"' + (c.type === 'int' ? ' inputmode="numeric"' : '') + ' value="' + esc(val) + '"' + (off ? ' disabled' : '') + (c.type === 'hhmm' ? ' placeholder="09:30"' : '') + '>';
+    }
+    if (lockedCell) html += '<div class="small muted">Calculated by a formula in the sheet, so it cannot be changed here.</div>';
+    else if (editing && isKey) html += '<div class="small muted">This identifies the row and cannot be changed.</div>';
+  });
+  if (tbl.table === 'Config' && editing) html += '<div class="small muted" style="margin-top:8px">' + esc(v.Description) + '</div>';
+  html += '<div class="row" style="margin-top:14px"><button class="btn" id="mfSave">' + (editing ? 'Save changes' : 'Add') + '</button><button class="btn secondary" data-close>Cancel</button>' +
+    (editing && tbl.canRemove ? '<button class="btn secondary" id="mfDelete" style="margin-left:auto;color:var(--bad)">Delete</button>' : '') + '</div><div class="small" id="mfMsg" style="margin-top:8px"></div>';
+  return html;
+}
+
+function manageOpenForm(m, tbl, row) {
+  openModal(manageForm(m, tbl, row), function (box) {
+    const editing = !!row, getv = function (n) { const el = box.querySelector('#mf_' + n); return el ? el.value : undefined; };
+    // Options: the Effect list follows the chosen list
+    if (tbl.table === 'Options') {
+      const eff = box.querySelector('#mf_Effect'), grp = box.querySelector('#mf_Group'), hint = box.querySelector('#mf_effect_hint');
+      const paintEffect = function () {
+        const g = grp.value; let opts = [['', '(none)']], h = '';
+        if (g === 'ISSUE_DEVICE' || g === 'ISSUE_SD_CARD') { opts = [['DISABLES', 'DISABLES: stops counting as working'], ['KEEPS_WORKING', 'KEEPS_WORKING: still usable'], ['MISSING', 'MISSING: marks it missing']]; h = 'What happens to a device or SD card when this problem is reported.'; }
+        else if (g === 'FLAG_SEVERITY') { opts = [['HIGH', 'HIGH'], ['MEDIUM', 'MEDIUM'], ['LOW', 'LOW']]; h = 'How urgent this kind of alert is.'; }
+        else if (g === 'TEAM_ALIAS') { opts = m.choices.supervisors.map(function (s) { return [s.id, s.name + ' (' + s.id + ')']; }); h = 'The team name in the team list means this supervisor.'; }
+        else h = 'This list has no rule.';
+        const cur = row ? row.v.Effect : '';
+        eff.innerHTML = opts.map(function (o) { return '<option value="' + esc(o[0]) + '"' + (o[0] === cur ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join(''); hint.textContent = h;
+      };
+      grp.addEventListener('change', paintEffect); paintEffect();
+    }
+    const msg = function (t, bad) { const e = box.querySelector('#mfMsg'); e.textContent = t; e.style.color = bad ? 'var(--bad)' : ''; };
+    const send = function (payload, btn) {
+      busy(btn, function () {
+        return callBackend('managerSave', Object.assign({ table: tbl.table }, payload)).then(function (r) {
+          closeModal();
+          toast(r.changed ? 'Saved' : 'Nothing changed'); (r.warnings || []).concat(r.notes || []).forEach(function (w) { setTimeout(function () { toast(w); }, 700); });
+          go('manage', true);
+        }).catch(function (e) { msg(e.message, true); });
+      });
+    };
+    box.querySelector('#mfSave').addEventListener('click', function (e) {
+      msg('');
+      if (editing) {
+        const changes = {}, expected = {};
+        tbl.columns.forEach(function (c) { const el = box.querySelector('#mf_' + c.n); if (!el || el.disabled) return; if (String(el.value) !== String(row.v[c.n] === undefined ? '' : row.v[c.n])) { changes[c.n] = el.value; expected[c.n] = row.v[c.n]; } });
+        if (!Object.keys(changes).length) { closeModal(); return; }
+        send({ op: 'edit', key: row.key, changes: changes, expected: expected }, e.target);
+      } else {
+        const values = {}; tbl.columns.forEach(function (c) { const x = getv(c.n); if (x !== undefined) values[c.n] = x; });
+        send({ op: 'add', values: values }, e.target);
+      }
+    });
+    const del = box.querySelector('#mfDelete');
+    if (del) del.addEventListener('click', function () {
+      if (!confirm('Delete this row? This cannot be undone (it will stay in the change history).')) return;
+      send({ op: 'remove', key: row.key, expected: row.v }, del);
+    });
+  });
+}
+
+VIEWS.manage = function () {
+  return swr('managerOverview', {}, function (m) {
+    const T = m.tables;
+    const sec = function (id, title, count, body) {
+      return '<details class="helpSec" data-sec="' + id + '"' + (manageOpen[id] ? ' open' : '') + '><summary>' + esc(title) + (count !== null ? ' <span class="muted">(' + count + ')</span>' : '') + '</summary><div class="helpBody">' + body + '</div></details>';
+    };
+    const listFor = function (t, filterFn) {
+      const tbl = T[t];
+      return (tbl.help ? '<p class="small muted" style="margin:0 0 8px">' + esc(tbl.help) + '</p>' : '') +
+        (tbl.formulaColumns.length ? '<div class="small muted" style="margin-bottom:8px">Calculated in the sheet (cannot be edited here): ' + tbl.formulaColumns.map(esc).join(', ') + '.</div>' : '') +
+        (tbl.canAdd ? '<div class="row" style="margin-bottom:8px"><button class="btn small" data-madd="' + t + '">Add</button></div>' : '') +
+        tbl.rows.filter(filterFn || function () { return true; }).map(function (r) {
+          return '<div class="item" style="align-items:flex-start"><div class="grow">' + MANAGE_ROW[t](r.v, m) + (r.locked.length ? '<div class="small muted">Calculated in the sheet: ' + r.locked.map(esc).join(', ') + '</div>' : '') + '</div><button class="btn secondary small" data-medit="' + t + '" data-key="' + esc(r.key) + '">Edit</button></div>';
+        }).join('') || '<div class="small muted">Nothing here yet.</div>';
+    };
+    const health = m.health.map(function (h) { return '<div class="banner ' + (h.level === 'bad' ? 'bad' : h.level === 'warn' ? 'warn' : '') + '" style="margin-bottom:8px;' + (h.level === 'ok' ? 'background:var(--ok-bg);color:var(--ok)' : h.level === 'info' ? 'background:var(--line);color:var(--muted)' : '') + '"><div class="grow small">' + esc(h.text) + '</div></div>'; }).join('');
+    const issues = m.health.filter(function (h) { return h.level === 'bad' || h.level === 'warn'; }).length;
+    // team: search, then a supervisor picker per person
+    const q = teamFilter.toLowerCase();
+    const people = m.team.filter(function (p) { return !q || (p.name + ' ' + p.email + ' ' + p.userId).toLowerCase().indexOf(q) !== -1; });
+    const supOpts = function (cur) { return '<option value="">(no supervisor)</option>' + m.choices.supervisors.map(function (s) { return '<option value="' + esc(s.email) + '"' + (s.email === cur ? ' selected' : '') + '>' + esc(s.name) + '</option>'; }).join(''); };
+    const team = '<p class="small muted" style="margin:0 0 8px">Who each person reports to decides whose Assign screen they appear on. Pick a supervisor to change it.' + (m.canEditTeam ? '' : ' (Not available in this setup.)') + '</p>' +
+      '<input type="text" id="teamSearch" placeholder="Find a person…" value="' + esc(teamFilter) + '">' +
+      '<div class="small muted" style="margin:6px 0">' + people.length + ' of ' + m.team.length + ' people' + (people.length > 40 ? ' (showing 40: search to narrow)' : '') + '</div>' +
+      people.slice(0, 40).map(function (p) {
+        const warn = !p.supervisorEmail ? ' ' + pill('no supervisor', 'warn') : (!p.supervisorName ? ' ' + pill('unknown supervisor', 'bad') : '');
+        return '<div class="item" style="align-items:flex-start"><div class="grow"><b>' + esc(p.name) + '</b>' + warn + '<div class="small muted">' + esc(p.email || p.userId) + '</div></div>' +
+          '<select data-team="' + esc(p.userId) + '" data-was="' + esc(p.supervisorEmail) + '" style="max-width:160px"' + (m.canEditTeam ? '' : ' disabled') + '>' + supOpts(p.supervisorEmail) + '</select></div>';
+      }).join('');
+    const log = m.log.length ? m.log.map(function (c) {
+      return '<div class="small" style="padding:6px 0;border-bottom:1px solid var(--line)"><b>' + esc(c.by) + '</b> · ' + fmt(c.at) + '<div>' + esc(c.tab) + ' ' + esc(c.key) + ' · ' + esc(c.field) + ': ' + (c.action === 'ADD' ? 'added ' + esc(c.newValue) : c.action === 'REMOVE' ? 'removed ' + esc(c.oldValue) : esc(c.oldValue || '(empty)') + ' → ' + esc(c.newValue || '(empty)')) + '</div></div>';
+    }).join('') : '<div class="small muted">No changes yet.</div>';
+    $('view').innerHTML =
+      '<div class="card"><h2 style="margin:0">Manage</h2><p class="small muted" style="margin:6px 0 10px">Change the setup of the app here instead of in the spreadsheet. Every change is recorded.</p>' +
+      '<h3 style="margin:0 0 6px">' + (issues ? issues + ' thing' + (issues > 1 ? 's' : '') + ' to look at' : 'Health check') + '</h3>' + health + '</div>' +
+      '<div class="card">' +
+      sec('team', 'Team: who reports to whom', m.team.length, team) +
+      sec('Supervisors', 'Supervisors', T.Supervisors.rows.length, listFor('Supervisors')) +
+      sec('Properties', 'Properties and their supervisor', T.Properties.rows.length, listFor('Properties')) +
+      sec('Admins', 'Admins, ops and managers', T.Admins.rows.length, listFor('Admins')) +
+      sec('Options', 'Options (drop-down lists and rules)', T.Options.rows.length, '<select id="optGroup" style="margin-bottom:8px"><option value="">All lists</option>' + ['ISSUE_DEVICE', 'ISSUE_SD_CARD', 'SUBTYPE_DEVICE', 'SUBTYPE_SD_CARD', 'FLAG_SEVERITY', 'TEAM_ALIAS'].map(function (g) { return '<option>' + g + '</option>'; }).join('') + '</select><div id="optList">' + listFor('Options') + '</div>') +
+      sec('Shift_Times', 'Shift times', T.Shift_Times.rows.length, listFor('Shift_Times')) +
+      sec('Config', 'Settings', T.Config.rows.length, listFor('Config')) +
+      sec('links', 'Property links and details (upcoming)', m.propertyLinks.rows.length, '<div id="stayHost">' + manageStayList(m) + '</div>') +
+      sec('log', 'Change history', m.log.length, log) +
+      sec('tools', 'Tools', null, '<div class="row"><button class="btn secondary" id="mRefresh">Refresh settings now</button><button class="btn secondary" id="mSignOut" style="color:var(--bad)">Sign everyone out</button></div><p class="small muted">Refresh makes setting changes apply straight away. Sign everyone out is for a lost or shared phone: everybody just signs in again.</p>') +
+      '</div>';
+    const view = $('view');
+    view.querySelectorAll('details[data-sec]').forEach(function (d) { d.addEventListener('toggle', function () { manageOpen[d.dataset.sec] = d.open; }); });
+    view.querySelectorAll('[data-madd]').forEach(function (b) { b.addEventListener('click', function () { manageOpenForm(m, T[b.dataset.madd], null); }); });
+    view.querySelectorAll('[data-medit]').forEach(function (b) { b.addEventListener('click', function () { const t = T[b.dataset.medit]; manageOpenForm(m, t, t.rows.find(function (r) { return r.key === b.dataset.key; })); }); });
+    const og = $('optGroup');
+    if (og) og.addEventListener('change', function () {
+      $('optList').innerHTML = listFor('Options', function (r) { return !og.value || r.v.Group === og.value; });
+      $('optList').querySelectorAll('[data-madd]').forEach(function (b) { b.addEventListener('click', function () { manageOpenForm(m, T.Options, null); }); });
+      $('optList').querySelectorAll('[data-medit]').forEach(function (b) { b.addEventListener('click', function () { manageOpenForm(m, T.Options, T.Options.rows.find(function (r) { return r.key === b.dataset.key; })); }); });
+    });
+    const wireStays = function () {
+      view.querySelectorAll('[data-stay]').forEach(function (b) {
+        b.addEventListener('click', function () { const r = m.propertyLinks.rows.map(stayEffective).find(function (x) { return stayIdentity(x._orig || x) === b.dataset.stay; }); if (r) manageOpenStay(m, r); });
+      });
+      const ss = $('staySearch');
+      if (ss) ss.addEventListener('input', function () { stayFilter = ss.value; $('stayHost').innerHTML = manageStayList(m); wireStays(); const e = $('staySearch'); e.focus(); e.setSelectionRange(e.value.length, e.value.length); });
+    };
+    wireStays();
+    const ts = $('teamSearch');
+    if (ts) ts.addEventListener('input', function () { teamFilter = ts.value; manageOpen.team = true; VIEWS.manage(); document.getElementById('teamSearch').focus(); });
+    view.querySelectorAll('[data-team]').forEach(function (s) {
+      s.addEventListener('change', function () {
+        busy(s, function () {
+          return callBackend('managerSetTeam', { userId: s.dataset.team, supervisorEmail: s.value, expected: s.dataset.was }).then(function (r) { toast(r.changed ? 'Team updated' : 'Nothing changed'); go('manage', true); })
+            .catch(function (e) { toastError(e); go('manage', true); });
+        });
+      });
+    });
+    if ($('mRefresh')) $('mRefresh').addEventListener('click', function (e) { busy(e.target, function () { return callBackend('refreshConfig', {}).then(function () { toast('Settings refreshed'); }); }); });
+    if ($('mSignOut')) $('mSignOut').addEventListener('click', function (e) {
+      if (!confirm('Sign everyone out, including you? They just sign in again with Google.')) return;
+      busy(e.target, function () { return callBackend('managerSignOutAll', {}).then(function () { toast('Everyone is signed out'); setTimeout(function () { signOut(); }, 800); }); });
+    });
+  });
+};
 
 // ---- Help (everyone) ----
 let helpFrom = '';
