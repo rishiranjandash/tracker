@@ -28,7 +28,8 @@ const HELP = {
     { title: 'Report an issue', html:
       '<p>Open <b>Report issue</b>, select one or many assets, choose the issue type for each, add a photo if it helps, and submit. Faulty devices stop counting as working and cannot be assigned until an admin resolves the issue.</p>' },
     { title: 'Asset check-in', html:
-      '<p>When your property changes (from 12:00 on the day a new property starts) you get a task to list the assets you hold, one a day. Tick what you physically have. Missing items are flagged for an admin to follow up. You can keep working while it is open.</p>' },
+      '<p>Devices belong to a property, not to a person. When you move to another property (the day starts at 12:00), <b>Check in</b> shows two lists: the assets you hold that are still recorded at your <b>old property</b>, and the assets that were <b>already at the new property</b>. Tick the ones you really have here: your old ones move with you, and the ones you find here become yours.</p>' +
+      '<p>If you leave out something that was already at the new property, the app asks if you really do not have it. Anything you do not tick stays with the person it is recorded with. If nobody ticks it at two check-ins in a row, the admins are alerted with its history.</p>' },
     { title: 'Search and alerts', html:
       '<p><b>Search</b> finds any asset by ID and shows its full history. The <b>Alerts</b> bell at the top lists reminders such as unassigned devices, check-ins and short receipts.</p>' }
   ],
