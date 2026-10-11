@@ -11,7 +11,7 @@ const HELP = {
       '<li><b>Call</b> dials the host or caretaker. <b>Copy</b> copies the number.</li>' +
       '<li><b>Past properties</b> lists your earlier properties from the last 30 days.</li>' +
       '<li>"Address not added yet" or "No host or caretaker number added yet" means the details are not filled in. Contact your manager.</li></ul>' +
-      '<p>Below it, Home lists the assets at your property. Tap a device for its menu. Tick several to report an issue, send or assign them together.</p>' },
+      '<p>Below it, Home lists the assets with your team: everything recorded in your location group, with today\'s property named beside it. Tap a device for its menu. Tick several to report an issue, send or assign them together.</p>' },
     { title: 'Last scan and location', html:
       '<p>Home shows when your location was last checked today, or your last attendance scan, whichever is newer.</p>' +
       '<ul><li><b>At &lt;property&gt;</b> (green): you are within about 1 km of the property you are scheduled for.</li>' +
@@ -59,6 +59,14 @@ const HELP = {
     { title: 'Schedule', html: '<p>Every supervisor\'s current and next property, whether they are at it, and the movement history. Tap <b>Why</b> to see how a status was worked out.</p>' },
     { title: 'Needs attention and Issues', html: '<p>Flagged items and reported issues. Select several to act on them together.</p>' },
     { title: 'Reports', html: '<p>Download CSV reports.</p>' }
+  ],
+  MANAGER: [
+    { title: 'What Manage is for', html: '<p>Manage lets you change the setup of the app here, so you rarely need to open the spreadsheet. Every change you make is recorded: who, when, what it was and what it became.</p>' },
+    { title: 'Health check', html: '<p>The top card lists things worth fixing, in plain words: a supervisor with no location group, a team member with no supervisor, a schedule row that matches nobody. Fix what is red first.</p>' },
+    { title: 'Team, supervisors and properties', html: '<ul><li><b>Team:</b> pick the supervisor each person reports to. That decides whose Assign screen they appear on.</li><li><b>Supervisors:</b> add a supervisor, change a name, Gmail or phone, or switch them off.</li><li><b>Properties:</b> set which supervisor works in each location group, and the number of SD cards and devices per worker.</li></ul><p>A supervisor can be in only one location group. Items marked "calculated in the sheet" cannot be edited here.</p>' },
+    { title: 'Admins, options, shift times and settings', html: '<ul><li><b>Admins:</b> add or switch off admins, ops and managers. You cannot switch off yourself or the last active admin or manager.</li><li><b>Options:</b> the drop-down lists, such as issue types and what each one does. Hide an option instead of deleting it if you might want it back.</li><li><b>Shift times:</b> when each shift\'s assignments end.</li><li><b>Settings:</b> numbers, times and names the app uses. Changes apply within a couple of minutes, or tap Refresh settings.</li></ul>' },
+    { title: 'If two managers edit at once', html: '<p>If someone else changed a row while you were editing it, you see "Someone else just changed this". Close the box, look at the new value, and try again. Nothing is overwritten.</p>' },
+    { title: 'Property links and the change history', html: '<p>Property links cannot be changed here yet. The change history lists the latest changes by everyone, with the old and new values.</p>' }
   ],
   COMMON: [
     { title: 'Signing in', html:
