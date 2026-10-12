@@ -181,3 +181,7 @@ label.btn { display: inline-block; cursor: pointer; }
 /* one card per device on the Issues screen */
 .issueCard .issueLine { border-top: 1px solid var(--line); padding: 8px 0 2px; margin-top: 8px; }
 .issueCard .issueLine.closed { opacity: .65; }
+
+/* a photo is still uploading in the background (or failed: tap to retry) */
+.photoStatus { position: fixed; left: 10px; bottom: 70px; z-index: 55; border: 0; background: var(--ink); color: var(--bg); font-size: 12px; padding: 7px 12px; border-radius: 16px; opacity: .92; cursor: pointer; max-width: 80vw; }
+.photoStatus.bad { background: var(--bad); color: #fff; }
