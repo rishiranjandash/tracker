@@ -177,10 +177,10 @@ function compressPhoto(file) {
   });
 }
 
-function uploadPhoto(kind, refLabel, file) {
-  if (window.MOCK_UPLOAD) return Promise.resolve(window.MOCK_UPLOAD(file));
-  const prepared = (preparedPhotos && preparedPhotos.get(file)) || compressPhoto(file);
-  return prepared.then(function (p) {
+/** Uploads an already shrunk photo (base64 JPEG) and resolves with its file id. */
+function uploadB64(kind, refLabel, b64) {
+  const p = { b64: b64 };
+  {
     return new Promise(function (resolve, reject) {
       const reqId = 'u' + Date.now() + Math.random().toString(36).slice(2);
       const iframe = document.createElement('iframe');
@@ -205,18 +205,77 @@ function uploadPhoto(kind, refLabel, file) {
       timer = setTimeout(function () { finish(); reject(new Error('The photo upload is taking too long.')); }, 90000);
       document.body.appendChild(iframe); document.body.appendChild(form); form.submit();
     });
-  });
+  }
 }
 
-/** Uploads the photo; if that fails the person may still send the report without it, so a weak connection never loses their work. */
-function uploadPhotoOrSkip(kind, refLabel, file) {
-  if (!file) return Promise.resolve('');
-  return uploadPhoto(kind, refLabel, file).catch(function (e) {
-    if (e && e.code === 'AUTH') throw e;
-    if (confirm((e && e.message ? e.message : 'The photo could not be uploaded.') + '\n\nSend without the photo?')) return '';
-    throw e;
-  });
-}
+/**
+ * Photos never hold up a send or a report. The send / report is saved first (marked "photo pending" on the server); this queue then shrinks
+ * and uploads the photo in the background and attaches it to the record when it is done. The shrunk photo is kept in this browser's
+ * storage, so a closed tab or a lost signal does not lose it: it carries on the next time the app opens (or comes back online).
+ * After 4 failed tries it tells the server the photo is missing (admins see a tag) and waits for a tap to retry.
+ */
+const PQ_KEY = 'at_photo_queue_v1';
+const photoQueue = (function () {
+  let items = [], running = false, timer = null;
+  const files = {};   // queue id -> the File chosen in THIS session (a reloaded page only has the shrunk copy)
+  try { items = JSON.parse(localStorage.getItem(PQ_KEY) || '[]') || []; } catch (e) { items = []; }
+  const save = function () { try { localStorage.setItem(PQ_KEY, JSON.stringify(items)); } catch (e) { /* storage full or blocked: it still uploads during this visit */ } };
+  const mine = function () { return items.filter(function (x) { return me && x.email === me.email; }); };
+  const paint = function () {
+    let el = $('photoStatus');
+    const list = mine(), failed = list.filter(function (x) { return x.state === 'FAILED'; }).length, going = list.length - failed;
+    if (!list.length) { if (el) el.remove(); return; }
+    if (!el) { el = document.createElement('button'); el.id = 'photoStatus'; el.type = 'button'; el.className = 'photoStatus'; el.addEventListener('click', function () { photoQueue.retry(); }); document.body.appendChild(el); }
+    el.classList.toggle('bad', !!failed);
+    el.textContent = failed ? (failed + (failed > 1 ? ' photos' : ' photo') + ' not uploaded · tap to retry') : ('Uploading ' + (going > 1 ? going + ' photos' : 'photo') + ' in the background…');
+  };
+  const prepare = function (it) {
+    if (it.b64 || window.MOCK_UPLOAD) return Promise.resolve();
+    const f = files[it.id];
+    if (!f) { const e = new Error('The photo is no longer on this phone.'); e.fatal = true; return Promise.reject(e); }
+    return ((preparedPhotos && preparedPhotos.get(f)) || compressPhoto(f)).then(function (p) { it.b64 = p.b64; save(); });
+  };
+  const step = function (it) {
+    return prepare(it).then(function () {
+      if (it.fileId) return it.fileId;   // uploaded earlier, only the attaching failed: do not upload twice
+      return window.MOCK_UPLOAD ? window.MOCK_UPLOAD(files[it.id]) : uploadB64(it.kind, it.refLabel, it.b64);
+    }).then(function (fileId) {
+      it.fileId = fileId; save();
+      return callBackend('attachPhoto', { kind: it.kind, ids: it.ids, fileId: fileId });
+    });
+  };
+  const wake = function () {
+    clearTimeout(timer);
+    const next = mine().filter(function (x) { return x.state === 'WAIT'; }).map(function (x) { return x.nextAt; }).sort()[0];
+    if (next) timer = setTimeout(pump, Math.max(500, next - Date.now()));
+  };
+  function pump() {
+    if (running) return;
+    const it = mine().find(function (x) { return x.state === 'QUEUED' || (x.state === 'WAIT' && x.nextAt <= Date.now()); });
+    if (!it) { paint(); wake(); return; }
+    running = true; it.state = 'UPLOADING'; paint();
+    step(it).then(function () {
+      items = items.filter(function (x) { return x !== it; }); delete files[it.id]; save(); memo = {}; toast('Photo uploaded.');
+    }).catch(function (e) {
+      if (e && e.code === 'AUTH') { it.state = 'PAUSED'; return; }                     // signed out: carries on after the next sign-in
+      it.tries = (it.tries || 0) + 1;
+      if ((e && e.fatal) || it.tries >= 4) {
+        it.state = 'FAILED'; callBackend('photoFailed', { kind: it.kind, ids: it.ids, reason: e && e.message }).catch(function () { /* the tag is a bonus */ });
+        toast('A photo could not be uploaded. Tap the note at the bottom to retry.', true);
+      } else { it.state = 'WAIT'; it.nextAt = Date.now() + 4000 * Math.pow(2, it.tries); }
+    }).then(function () { running = false; save(); paint(); pump(); });
+  }
+  return {
+    add: function (kind, ids, refLabel, file) {
+      const it = { id: 'q' + Date.now() + Math.random().toString(36).slice(2, 6), email: me.email, kind: kind, ids: ids, refLabel: refLabel, b64: '', fileId: '', state: 'QUEUED', tries: 0, nextAt: 0 };
+      files[it.id] = file; items.push(it); save(); paint(); pump();
+    },
+    resume: function () { items.forEach(function (x) { if (me && x.email === me.email && (x.state === 'PAUSED' || x.state === 'UPLOADING')) x.state = 'QUEUED'; }); save(); paint(); pump(); },
+    retry: function () { mine().forEach(function (x) { if (x.state === 'FAILED' || x.state === 'WAIT') { x.state = 'QUEUED'; x.tries = 0; } }); save(); paint(); pump(); },
+    pending: function () { return mine().length; }
+  };
+})();
+window.addEventListener('online', function () { if (me) photoQueue.resume(); });
 
 function viewPhoto(fileId) {
   callBackend('photoGet', { fileId: fileId }).then(function (p) {
@@ -427,6 +486,7 @@ function startSession(withSync) {
     pollTimer = setInterval(poll, (OPTS.ui.pollSeconds || CONFIG.POLL_SECONDS || 45) * 1000);
     updateBadge();
     if (withSync) setTimeout(backgroundSync, 300);
+    setTimeout(function () { photoQueue.resume(); }, 1500);   // finish any photo that was still uploading when the app was last closed
     setTimeout(prefetch, 900);
     setTimeout(recordLocation, 1500);
   }).catch(function (e) {
@@ -1124,6 +1184,8 @@ function transferCard(t) {
   else if (t.status === 'IN_TRANSIT') html += '<span class="small muted">Waiting for ' + esc(t.to) + ' to confirm</span>';
   if (t.status === 'IN_TRANSIT' && (me.role === 'ADMIN' || t.sentBy === me.name)) html += '<button class="btn secondary small" data-cancel="' + esc(t.id) + '">Cancel</button>';
   if (t.photoFileId) html += '<button class="btn secondary small" data-photo="' + esc(t.photoFileId) + '">View photo</button>';
+  else if (t.photoState === 'PENDING') html += '<span class="small muted">Photo on its way…</span>';
+  else if (t.photoState === 'MISSING') html += pill('Photo missing (upload failed)', 'warn');
   return html + '</div></div>';
 }
 
@@ -1202,10 +1264,11 @@ VIEWS.newTransfer = function (preselect) {
       if (!$('toSup').value) return toast('Choose where the assets are going.', true);
       const dest = $('toSup').value, toOffice = dest === 'OFFICE';
       busy(e.target, function () {
-        const f = photo.file();
-        return uploadPhotoOrSkip('transfer', 'transfer', f).then(function (fid) {
-          return callBackend('createTransfer', { toType: toOffice ? 'OFFICE' : 'SUPERVISOR', toId: toOffice ? '' : dest, assetIds: ids, others: oth, note: $('note').value, photoFileId: fid });
-        }).then(function (res) { toast(res.itemCount + ' item(s) in transit · ' + res.transferId); go('transfers'); });
+        const f = photo.file();   // the send goes through now; the photo follows in the background
+        return callBackend('createTransfer', { toType: toOffice ? 'OFFICE' : 'SUPERVISOR', toId: toOffice ? '' : dest, assetIds: ids, others: oth, note: $('note').value, photoPending: !!f }).then(function (res) {
+          if (f) photoQueue.add('transfer', [res.transferId], res.transferId, f);
+          toast(res.itemCount + ' item(s) in transit · ' + res.transferId + (f ? ' · photo uploading in the background' : '')); go('transfers');
+        });
       });
     });
   });
@@ -1289,7 +1352,7 @@ function groupIssues(list) {
     if (ln.by.indexOf(i.by) === -1) ln.by.push(i.by);
     if (i.at > ln.at) ln.at = i.at;
     if (i.description && ln.descriptions.indexOf(i.description) === -1) ln.descriptions.push(i.description);
-    if (i.photoFileId) ln.photos.push(i.photoFileId);
+    if (i.photoFileId) ln.photos.push(i.photoFileId); else if (i.photoState) ln.photoState = (ln.photoState === 'MISSING' || i.photoState === 'MISSING') ? 'MISSING' : 'PENDING';
   });
   cards.forEach(function (c) { c.lines.sort(function (a, b) { return (b.open - a.open) || (a.at < b.at ? 1 : -1); }); c.openIds = []; c.lines.forEach(function (l) { if (l.open) l.ids.forEach(function (id) { c.openIds.push(id); }); }); });
   return cards.sort(function (a, b) { return (b.openIds.length > 0) - (a.openIds.length > 0) || (a.latest < b.latest ? 1 : -1); });
@@ -1307,6 +1370,7 @@ function issueCard(c, selectable) {
         '<div class="small muted">' + esc(l.by.join(', ')) + ' · latest ' + fmt(l.at) + '</div>' +
         l.descriptions.slice(0, 3).map(function (d) { return '<div class="small">“' + esc(d) + '”</div>'; }).join('') +
         (l.resolution ? '<div class="small muted">Resolution: ' + esc(l.resolution) + '</div>' : '') +
+        (!l.photos.length && l.photoState === 'PENDING' ? '<div class="small muted">Photo on its way…</div>' : '') + (!l.photos.length && l.photoState === 'MISSING' ? '<div style="margin-top:6px">' + pill('Photo missing (upload failed)', 'warn') + '</div>' : '') +
         (l.photos.length ? '<div class="row" style="margin-top:6px">' + l.photos.slice(0, 3).map(function (p, n) { return '<button class="btn secondary small" data-photo="' + esc(p) + '">Photo ' + (n + 1) + '</button>'; }).join('') + '</div>' : '') + '</div>' +
         pill(l.status.replace('_', ' ').toLowerCase(), !l.open ? 'ok' : l.status === 'UNDER_REVIEW' ? 'info' : 'warn') + '</div></div>';
     }).join('') + '</div>';
@@ -1386,10 +1450,9 @@ VIEWS.issue = function (preset) {
       const typeByCategory = {};
       ['DEVICE', 'SD_CARD'].forEach(function (c) { if ($('type_' + c)) typeByCategory[c] = $('type_' + c).value; });
       busy(e.target, function () {
-        const f = photo.file();
-        return uploadPhotoOrSkip('issue', ids[0], f).then(function (fid) {
-          return callBackend('reportIssues', { assetIds: ids, typeByCategory: typeByCategory, description: $('desc').value, photoFileId: fid });
-        }).then(function (r) {
+        const f = photo.file();   // the report goes through now; the photo follows in the background
+        return callBackend('reportIssues', { assetIds: ids, typeByCategory: typeByCategory, description: $('desc').value, photoPending: !!f }).then(function (r) {
+          if (f && r.count) photoQueue.add('issue', r.issueIds, ids[0], f);
           homeSel.clear(); memo = {};
           const dup = (r.duplicates || []).length;
           if (!r.count) { toast('Already reported. Nothing new was sent' + (dup ? ' (' + r.duplicates.map(function (d) { return d.assetId; }).join(', ') + ').' : '.'), true); go(me.role === 'SUPERVISOR' ? 'home' : 'issues'); return; }
@@ -1426,7 +1489,7 @@ function renderDetail(d) {
   }).join('') + '</ul>' : emptyState('No movements yet.')) + '</div>';
   html += '<div class="card"><h2>Issues</h2>' + (d.issues.length ? d.issues.map(function (i) {
     return '<div class="item"><div class="grow"><div class="t">' + esc(i.type) + '</div><div class="small muted">' + fmt(i.at) + ' · ' + esc(i.by) + '</div>' + (i.description ? '<div class="small">' + esc(i.description) + '</div>' : '') +
-      (i.photoFileId ? '<button class="btn secondary small" data-photo="' + esc(i.photoFileId) + '">View photo</button>' : '') + '</div>' + pill(i.status.toLowerCase().replace('_', ' '), i.status === 'OPEN' ? 'warn' : 'ok') + '</div>';
+      (i.photoFileId ? '<button class="btn secondary small" data-photo="' + esc(i.photoFileId) + '">View photo</button>' : (i.photoState === 'PENDING' ? '<div class="small muted">Photo on its way…</div>' : (i.photoState === 'MISSING' ? pill('Photo missing (upload failed)', 'warn') : ''))) + '</div>' + pill(i.status.toLowerCase().replace('_', ' '), i.status === 'OPEN' ? 'warn' : 'ok') + '</div>';
   }).join('') : emptyState('No issues recorded.')) + '</div>';
   $('detail').innerHTML = html;
 }
