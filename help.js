@@ -24,6 +24,7 @@ const HELP = {
       '<p><b>Take all off</b> clears one person. <b>Still with same people</b> confirms nothing has changed (the app asks every 4 hours between 07:00 and 21:00). People who are not registered in the Awign app show "Not registered in the Awign app yet"; you can still assign to them.</p>' },
     { title: 'Send assets and confirm receipt', html:
       '<ol><li>Open <b>Transfers</b> and choose where to send: the Office or another supervisor.</li><li>Tick the assets and send.</li></ol>' +
+      '<p>A photo is optional and never slows you down: the send goes through at once and the photo uploads in the background while you carry on. A note at the bottom shows it is still uploading; if it fails, tap the note to try again.</p>' +
       '<p>The receiver ticks only what actually arrived. Anything not ticked is flagged as a short receipt for an admin to settle. You can cancel a transfer that is still in transit. You cannot confirm a transfer you sent yourself.</p>' },
     { title: 'Report an issue', html:
       '<p>Open <b>Report issue</b>, select one or many assets, choose the issue type for each, add a photo if it helps, and submit. Faulty devices stop counting as working and cannot be assigned until an admin resolves the issue.</p>' },
