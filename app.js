@@ -71,7 +71,7 @@ function catPrefix(c) { return c === 'DEVICE' ? '' : catLabel(c) + ' '; }
 // ===================== TRANSPORT =====================
 
 // Actions that only read. Everything else is a save, which wipes the screen memo below.
-const READS = { checkinList: 1, managerOverview: 1, saveLocation: 1, stays: 1, home: 1, picker: 1, search: 1, issues: 1, flags: 1, notifications: 1, supervisors: 1, properties: 1, supervisorList: 1, team: 1, assignments: 1, report: 1, options: 1, transfers: 1, pulse: 1, photoGet: 1, sync: 1 };
+const READS = { officeStock: 1, checkinList: 1, managerOverview: 1, saveLocation: 1, stays: 1, home: 1, picker: 1, search: 1, issues: 1, flags: 1, notifications: 1, supervisors: 1, properties: 1, supervisorList: 1, team: 1, assignments: 1, report: 1, options: 1, transfers: 1, pulse: 1, photoGet: 1, sync: 1 };
 const NO_MEMO = { saveLocation: 1, search: 1, report: 1, photoGet: 1, pulse: 1, sync: 1, notifications: 1 };
 let memo = {};          // last answer for each read, so a screen can be drawn instantly while a fresh answer loads
 let memoEpoch = 0;      // bumped by every save, so an answer that was in flight during a save is not remembered
@@ -619,7 +619,7 @@ const TABS = {
   OPS: [['dash', 'Dashboard'], ['schedule', 'Schedule'], ['flags', 'Needs attention'], ['issues', 'Issues'], ['search', 'Search'], ['reports', 'Reports']],
   MANAGER: [['manage', 'Manage']]
 };
-const PARENT_TAB = { newTransfer: 'transfers', checkin: 'home', alerts: null, help: null, property: 'dash' };
+const PARENT_TAB = { office: 'dash', newTransfer: 'transfers', checkin: 'home', alerts: null, help: null, property: 'dash' };
 
 function buildTabs() {
   $('tabs').innerHTML = TABS[me.role].map(function (t) { return '<button data-tab="' + t[0] + '">' + t[1] + '</button>'; }).join('');
@@ -731,6 +731,48 @@ VIEWS.home = function () {
       const sl = $('scanLine'); if (sl && myNav === navId) sl.innerHTML = scanLineHtml({ failed: true, message: e && e.message ? e.message : '' }, h);
       const box = $('stayBox'); if (box && myNav === navId && !box.innerHTML) box.innerHTML = '<div class="card"><h2>Your property schedule</h2><div class="small muted">Could not load the schedule' + (e && e.message ? ': ' + esc(e.message) : '') + '. <button class="linkBtn" data-go="home">Try again</button></div></div>';
     });
+  });
+};
+
+// ---- Admin: everything held in the Office ----
+let officeSel = new Set();
+VIEWS.office = function () {
+  return swr('officeStock', {}, function (d) {
+    const existing = {}; d.assets.forEach(function (a) { existing[a.id] = true; });
+    officeSel.forEach(function (id) { if (!existing[id]) officeSel.delete(id); });
+    const working = function (c) { return d.assets.filter(function (a) { return a.category === c && a.status === 'WORKING'; }).length; };
+    const faulty = d.assets.filter(function (a) { return a.status !== 'WORKING'; }).length;
+    $('view').innerHTML = '<div class="stickyHead flat"><div class="row spread"><div><h2 style="margin:0">' + esc(d.name) + ': what is held here</h2><div class="small muted">Every asset recorded in the Office, whichever admin holds it. Working counts match the dashboard card.</div></div>' +
+      '<button class="btn secondary" data-go="dash">‹ Dashboard</button></div></div>' +
+      '<div class="card"><div class="row">' + (OPTS.categories || []).map(function (c) { return pill(c.label + ': ' + working(c.code) + ' working', 'info'); }).join('') + (faulty ? pill(faulty + ' not working', 'bad') : '') + '</div>' +
+      (d.canAct ? '<p class="small muted" style="margin:8px 0 0">Tap an asset for its history and actions. Tick several to report an issue or send them together.</p>' : '<p class="small muted" style="margin:8px 0 0">Tap an asset for its history.</p>') +
+      '<div class="stickyHead"><div class="row"><input type="text" id="officeFilter" placeholder="Filter by ID, type or holder…" class="grow">' + (d.canAct ? '<button class="linkBtn" id="offAll">Select all shown</button><button class="linkBtn" id="offNone">Clear</button>' : '') + '</div></div>' +
+      '<div id="officeList"></div></div>';
+    const visible = function () {
+      const q = $('officeFilter').value.trim().toLowerCase();
+      return d.assets.filter(function (a) { return !q || (a.id + ' ' + a.subType + ' ' + a.holder + ' ' + catLabel(a.category)).toLowerCase().indexOf(q) !== -1; });
+    };
+    const updateBar = function () { if ($('barCount')) $('barCount').textContent = officeSel.size + ' selected'; barShow(d.canAct && officeSel.size > 0); };
+    const paint = function () {
+      const m = visible();
+      $('officeList').innerHTML = m.length ? '<div class="small muted" style="margin:6px 0">' + m.length + ' of ' + d.assets.length + (m.length > 300 ? ' (showing 300: filter to narrow)' : '') + '</div>' + m.slice(0, 300).map(function (a) {
+        return '<div class="item">' + (d.canAct && a.state === 'AVAILABLE' ? '<label class="selbox"><input type="checkbox" data-osel="' + esc(a.id) + '"' + (officeSel.has(a.id) ? ' checked' : '') + '></label>' : '') +
+          '<div class="grow" data-asset="' + esc(a.id) + '" style="cursor:pointer"><div class="t">' + esc(a.id) + ' <span class="muted">' + esc(catLabel(a.category)) + ' ' + esc(a.subType) + '</span></div><div class="small muted">' + esc(a.holder) + '</div></div>' +
+          (a.provisional ? pill('awaiting admin', 'prov') : '') + (a.status !== 'WORKING' ? pill(a.status.toLowerCase(), 'bad') : '') + (a.openIssues ? pill('issue reported', 'warn') : '') + '</div>';
+      }).join('') : emptyState(d.assets.length ? 'No match.' : 'Nothing is recorded in the Office.');
+    };
+    barSet('<span id="barCount" class="grow"></span><button class="btn small" data-bar="issue">Report issue</button><button class="btn small" data-bar="send">Send</button><button class="btn secondary small" data-bar="clear">Clear</button>', {
+      issue: function () { go('issue', false, Array.from(officeSel)); },
+      send: function () { go('newTransfer', false, Array.from(officeSel)); },
+      clear: function () { officeSel.clear(); paint(); updateBar(); }
+    });
+    $('officeFilter').addEventListener('input', paint);
+    $('officeList').addEventListener('change', function (e) { const id = e.target.dataset.osel; if (!id) return; if (e.target.checked) officeSel.add(id); else officeSel.delete(id); updateBar(); });
+    if (d.canAct) {
+      $('offAll').addEventListener('click', function () { visible().forEach(function (a) { if (a.state === 'AVAILABLE') officeSel.add(a.id); }); paint(); updateBar(); });
+      $('offNone').addEventListener('click', function () { officeSel.clear(); paint(); updateBar(); });
+    }
+    paint(); updateBar();
   });
 };
 
@@ -888,7 +930,7 @@ VIEWS.dash = function () {
       tile(h.openIssues, 'Open issues', '', 'issues') +
       tile(h.provisional, 'Awaiting acknowledgement', h.provisional ? 'warn' : '', 'flags') +
       tile(h.overdueCheckins, 'Overdue check-ins', h.overdueCheckins ? 'warn' : '', 'flags') +
-      tile(d.office.devices + ' / ' + d.office.sdCards + (d.extraCategories || []).map(function (c) { return ' / ' + ((d.office.extras || {})[c.code] || 0); }).join(''), 'Office stock (devices / SD' + (d.extraCategories || []).map(function (c) { return ' / ' + c.label.toLowerCase(); }).join('') + ')', '', 'search') + '</div>';
+      tile(d.office.devices + ' / ' + d.office.sdCards + (d.extraCategories || []).map(function (c) { return ' / ' + ((d.office.extras || {})[c.code] || 0); }).join(''), 'Office stock (devices / SD' + (d.extraCategories || []).map(function (c) { return ' / ' + c.label.toLowerCase(); }).join('') + ') · tap to see them', '', 'office') + '</div>';
     html += '<div class="card"><h2>Properties: working devices vs workforce today</h2><div class="tablewrap"><table><thead><tr><th>Property</th><th>Supervisor</th>' +
       '<th class="num">Workforce</th><th class="num">Working devices</th><th class="num">Needed</th><th>Device gap</th><th class="num">Faulty</th><th class="num">SD cards</th><th class="num">SD needed</th><th>SD gap</th>' + (d.extraCategories || []).map(function (c) { return '<th class="num">' + esc(c.label) + ' (working / faulty)</th>'; }).join('') + '</tr></thead><tbody>' +
       d.properties.map(function (p) {
@@ -1499,13 +1541,43 @@ VIEWS.issue = function (preset) {
 
 // ---- Search ----
 VIEWS.search = function (preset) {
-  $('view').innerHTML = '<div class="stickyHead flat"><h2 style="margin:0 0 8px">Find an asset</h2><div class="row"><input type="text" id="q" class="grow" placeholder="Device or SD card ID, e.g. D102 or SD054" value="' + esc(preset || '') + '"><button class="btn" id="go">Search</button></div></div><div id="detail"></div>';
-  const run = function () {
-    const q = $('q').value.trim(); if (!q) return;
+  $('view').innerHTML = '<div class="stickyHead flat"><h2 style="margin:0 0 8px">Find an asset</h2><div class="row"><input type="text" id="q" class="grow" autocomplete="off" placeholder="Type an ID, kind, holder or place, e.g. D102, iPhone, Sunil" value="' + esc(preset || '') + '"><button class="btn" id="go">Search</button></div>' +
+    '<div id="sug" class="sug hidden"></div></div><div id="detail"></div>';
+  const run = function (idOverride) {
+    const q = (idOverride || $('q').value).trim(); if (!q) return;
+    $('sug').classList.add('hidden');
     callBackend('search', { assetId: q }).then(renderDetail).catch(function (e) { $('detail').innerHTML = '<div class="card"><div class="muted">' + esc(e.message) + '</div></div>'; });
   };
-  $('go').addEventListener('click', run);
-  $('q').addEventListener('keydown', function (e) { if (e.key === 'Enter') run(); });
+  // Suggestions while typing: matched on the ID, the kind, the holder and the place, from the same list the pickers use (loaded once, in the background)
+  let all = [], shown = [], on = -1;
+  cachedCall('picker', {}, 30000).then(function (list) { all = list; if (document.activeElement === $('q') && $('q').value.trim()) suggest(); }).catch(function () { /* typing an exact ID and pressing Search still works */ });
+  function suggest() {
+    const terms = $('q').value.trim().toLowerCase().split(/\s+/).filter(Boolean), box = $('sug');
+    if (!terms.length) { box.classList.add('hidden'); shown = []; return; }
+    const hit = function (x) { return (x.id + ' ' + catLabel(x.c) + ' ' + (x.t || '') + ' ' + (x.h || '') + ' ' + (x.loc || '') + ' ' + (x.st || '')).toLowerCase(); };
+    const first = terms[0];
+    shown = all.filter(function (x) { const h = hit(x); return terms.every(function (t) { return h.indexOf(t) !== -1; }); })
+      .sort(function (x, y) { const sx = x.id.toLowerCase().indexOf(first) === 0 ? 0 : 1, sy = y.id.toLowerCase().indexOf(first) === 0 ? 0 : 1; return (sx - sy) || (x.id < y.id ? -1 : 1); });
+    const total = shown.length; shown = shown.slice(0, 12); on = -1;
+    box.innerHTML = shown.length ? shown.map(function (x, i) {
+      return '<div class="opt" data-sug="' + esc(x.id) + '" data-i="' + i + '"><div class="grow"><b>' + esc(x.id) + '</b> <span class="muted">' + esc(catLabel(x.c)) + (x.t ? ' ' + esc(x.t) : '') + '</span><div class="small muted">' + esc(x.h || '') + (x.loc ? ' · ' + esc(x.loc) : '') + '</div></div>' +
+        (x.st && x.st !== 'AVAILABLE' ? pill(x.st.toLowerCase().replace('_', ' '), 'warn') : '') + '</div>';
+    }).join('') + (total > shown.length ? '<div class="small muted" style="padding:8px 12px">' + (total - shown.length) + ' more: type a little more to narrow it.</div>' : '')
+      : '<div class="small muted" style="padding:10px 12px">No asset matches. Press Search to look for the exact ID.</div>';
+    box.classList.remove('hidden');
+  }
+  const mark = function () { $('sug').querySelectorAll('.opt').forEach(function (el, i) { el.classList.toggle('on', i === on); if (i === on) el.scrollIntoView({ block: 'nearest' }); }); };
+  $('go').addEventListener('click', function () { run(); });
+  $('q').addEventListener('input', suggest);
+  $('q').addEventListener('focus', function () { if ($('q').value.trim()) suggest(); });
+  $('q').addEventListener('keydown', function (e) {
+    if (e.key === 'ArrowDown' && shown.length) { e.preventDefault(); on = Math.min(shown.length - 1, on + 1); mark(); }
+    else if (e.key === 'ArrowUp' && shown.length) { e.preventDefault(); on = Math.max(0, on - 1); mark(); }
+    else if (e.key === 'Escape') $('sug').classList.add('hidden');
+    else if (e.key === 'Enter') { if (on >= 0 && shown[on]) { $('q').value = shown[on].id; run(shown[on].id); } else run(); }
+  });
+  $('sug').addEventListener('mousedown', function (e) { e.preventDefault(); });   // keep the typing focus while a suggestion is tapped
+  $('sug').addEventListener('click', function (e) { const o = e.target.closest('[data-sug]'); if (!o) return; $('q').value = o.dataset.sug; run(o.dataset.sug); });
   if (preset) run();
 };
 
@@ -1515,7 +1587,8 @@ function renderDetail(d) {
     '<div class="row">' + pill(a.status.toLowerCase(), a.status === 'WORKING' ? 'ok' : 'bad') + (a.state !== 'AVAILABLE' ? pill(a.state.toLowerCase().replace('_', ' '), 'warn') : '') + (a.provisional ? pill('awaiting admin', 'prov') : '') + '</div></div>' +
     '<div class="fieldRow" style="margin-top:10px"><div><div class="small muted">Where it is now</div><b>' + esc(a.state === 'SHORT' ? 'Not received (' + a.locationName + ')' : a.locationName) + '</b></div>' +
     '<div><div class="small muted">Who has it</div><b>' + esc(a.holder) + '</b>' + (a.assignedTo ? '<div class="small">Using it today: ' + esc(a.assignedTo) + '</div>' : '') + '</div><div><div class="small muted">Last movement</div><b>' + fmt(a.lastMoveAt) + '</b></div></div>' +
-    '<div class="row" style="margin-top:10px"><button class="btn secondary small" data-issue-for="' + esc(a.id) + '">Report issue</button>' + (a.state === 'AVAILABLE' ? '<button class="btn secondary small" data-send-for="' + esc(a.id) + '">Send / in transit</button>' : '') + '</div></div>';
+    '<div class="row" style="margin-top:10px"><button class="btn secondary small" data-issue-for="' + esc(a.id) + '">Report issue</button>' + (a.state === 'AVAILABLE' ? '<button class="btn secondary small" data-send-for="' + esc(a.id) + '">Send / in transit</button>' : '') +
+    (me.role === 'ADMIN' && a.placeholder && a.status !== 'RETIRED' && a.state !== 'IN_TRANSIT' ? '<button class="btn secondary small" data-retire="' + esc(a.id) + '">Not a real asset: retire</button>' : '') + '</div></div>';
   if (d.flags && d.flags.length) html += '<div class="card flag HIGH"><h2>Open flags</h2>' + d.flags.map(function (f) { return '<div class="small"><b>' + esc(f.Type) + ':</b> ' + esc(f.Detail) + '</div>'; }).join('') + '</div>';
   html += '<div class="card"><h2>Movement history</h2>' + (d.movements.length ? '<ul class="timeline">' + d.movements.map(function (m) {
     return '<li><b>' + esc(m.reason.replace(/_/g, ' ').toLowerCase()) + '</b> · ' + fmt(m.at) + '<div class="small muted">' + esc(m.from) + ' → ' + esc(m.to) + (m.ref ? ' · ' + esc(m.ref) : '') + ' · by ' + esc(m.by) + '</div></li>';
@@ -1558,7 +1631,7 @@ function renderFlags(all) {
       (isAdmin ? '<p class="small muted">Tick several to deal with them together (dismiss, assign to a holder, settle short receipts, acknowledge).</p>' : '') +
       (flags.length ? flags.map(function (f) {
         const prov = isAdmin && f.type === 'PROVISIONAL_ASSET'
-          ? '<div class="row" style="margin-top:8px"><input type="text" placeholder="Real asset ID (if known)" id="newid_' + esc(f.id) + '" style="max-width:200px"><button class="btn small" data-ack="' + esc(f.assetId) + '" data-flag="' + esc(f.id) + '">Acknowledge this one</button></div>' : '';
+          ? '<div class="row" style="margin-top:8px"><input type="text" placeholder="Real asset ID (if known)" id="newid_' + esc(f.id) + '" style="max-width:200px"><button class="btn small" data-ack="' + esc(f.assetId) + '" data-flag="' + esc(f.id) + '">Acknowledge this one</button><button class="btn secondary small" data-retire="' + esc(f.assetId) + '">Not a real asset: retire</button></div>' : '';
         return '<div class="card flag ' + esc(f.severity) + '"><div class="row spread" style="align-items:flex-start">' + (isAdmin && !f.readonly ? '<label class="selbox"><input type="checkbox" data-fsel="' + esc(f.id) + '"></label>' : '') +
           '<div class="grow"><b>' + esc(f.title || FLAG_TITLES[f.type] || f.type) + '</b>' + (f.assetId ? ' · <a href="#" data-asset="' + esc(f.assetId) + '">' + esc(f.assetId) + '</a>' : '') + (f.refId ? ' · ' + esc(f.refId) : '') + '</div>' +
           pill(f.severity.toLowerCase(), f.severity === 'HIGH' ? 'bad' : f.severity === 'MEDIUM' ? 'warn' : 'info') + '</div><div>' + esc(f.detail) + '</div><div class="small muted">' + fmt(f.at) + (f.location ? ' · ' + esc(f.location) : '') + '</div>' + prov + '</div>';
@@ -1571,11 +1644,12 @@ function renderFlags(all) {
       '<button class="btn secondary small" data-bar="dismiss">Dismiss</button>' +
       '<select id="barHolder" style="width:auto">' + holderOpts + '</select><button class="btn small" data-bar="assign">Assign</button>' +
       '<select id="barShort" style="width:auto"><option value="RECOVERED">It turned up - receive</option><option value="RETURN_TO_SENDER">Return to sender</option><option value="LOST">Mark lost</option></select><button class="btn small" data-bar="short">Settle short</button>' +
-      '<button class="btn small" data-bar="ack">Acknowledge</button><button class="btn secondary small" data-bar="clear">Clear</button>', {
+      '<button class="btn small" data-bar="ack">Acknowledge</button><button class="btn secondary small" data-bar="retire">Retire</button><button class="btn secondary small" data-bar="clear">Clear</button>', {
       dismiss: function () { runBulk('DISMISS', { resolution: prompt('Why are you dismissing these? (optional)') || '' }); },
       assign: function () { const v = $('barHolder').value.split(':'); runBulk('ASSIGN', { holderType: v[0], holderId: v[0] === 'ADMIN' ? me.email : v[1] }); },
       short: function () { runBulk('SHORT', { resolution: $('barShort').value }); },
       ack: function () { runBulk('ACK', {}); },
+      retire: function () { const why = prompt('These are not real assets (for example the device is already in the list under its real ID). They will disappear from all lists. Why? (optional)'); if (why === null) return; runBulk('RETIRE', { resolution: why || '' }); },
       clear: function () { sel.clear(); document.querySelectorAll('[data-fsel]').forEach(function (c) { c.checked = false; }); updateBar(); }
     });
     function runBulk(op, arg) {
@@ -1592,6 +1666,7 @@ function renderFlags(all) {
       enable('assign', every(function (f) { return ASSIGNABLE.indexOf(f.type) !== -1 && f.assetId; }));
       enable('short', every(function (f) { return f.type === 'SHORT_RECEIPT'; }));
       enable('ack', every(function (f) { return f.type === 'PROVISIONAL_ASSET'; }));
+      enable('retire', every(function (f) { return f.type === 'PROVISIONAL_ASSET'; }));
       $('barHolder').disabled = !every(function (f) { return ASSIGNABLE.indexOf(f.type) !== -1 && f.assetId; });
       $('barShort').disabled = !every(function (f) { return f.type === 'SHORT_RECEIPT'; });
       barShow(picked.length > 0);
@@ -2004,7 +2079,7 @@ VIEWS.alerts = function () {
 // ===================== EVENTS =====================
 
 document.addEventListener('click', function (e) {
-  const t = e.target.closest('[data-tab],[data-go],[data-act],[data-receive],[data-cancel],[data-photo],[data-asset],[data-issue],[data-issue-for],[data-short],[data-ack],[data-assign],[data-dismiss],[data-report],[data-unassign],[data-confirmitems],[data-confirmall],[data-send-for],[data-bar],[data-refreshcfg],[data-prop],#bellBtn,#signOutBtn,#helpBtn');
+  const t = e.target.closest('[data-tab],[data-go],[data-act],[data-receive],[data-cancel],[data-photo],[data-asset],[data-issue],[data-issue-for],[data-short],[data-ack],[data-retire],[data-assign],[data-dismiss],[data-report],[data-unassign],[data-confirmitems],[data-confirmall],[data-send-for],[data-bar],[data-refreshcfg],[data-prop],#bellBtn,#signOutBtn,#helpBtn');
   if (!t) return;
   const d = t.dataset;
   if (t.id === 'bellBtn') return go('alerts');
@@ -2029,6 +2104,10 @@ document.addEventListener('click', function (e) {
     return busy(t, function () { return callBackend('updateIssue', { issueId: d.issue, status: d.status, resolution: note ? note.value : '' }).then(function () { toast('Issue updated'); go('issues', true); }); });
   }
   if (d.short) return busy(t, function () { return callBackend('resolveShort', { flagId: d.flag, resolution: d.short }).then(function () { toast('Resolved'); go('flags', true); }); });
+  if (d.retire) {
+    const why = prompt('This is not a real asset (for example the device is already in the list under its real ID). It will disappear from all lists. Why? (optional)'); if (why === null) return;
+    return busy(t, function () { return callBackend('retireProvisional', { assetId: d.retire, reason: why }).then(function () { toast('Retired'); if ($('detail')) callBackend('search', { assetId: d.retire }).then(renderDetail).catch(function () {}); else go('flags', true); }); });
+  }
   if (d.ack) {
     const nid = $('newid_' + d.flag);
     return busy(t, function () { return callBackend('ackProvisional', { assetId: d.ack, newId: nid ? nid.value : '' }).then(function () { toast('Acknowledged'); go('flags', true); }); });
