@@ -51,7 +51,8 @@ const ASSET_CSV_ALIASES = {
  * Columns are found by their header NAME (any order; common spellings accepted). Rows with problems the server would
  * reject anyway (no id, bad category, id repeated inside the file) are listed in `problems` and left out of `rows`.
  */
-function assetRowsFromCsv(parsed) {
+function assetRowsFromCsv(parsed, categories) {
+  const allowed = categories && categories.length ? categories : ['DEVICE', 'SD_CARD'];
   const out = { rows: [], problems: [], headerOk: false };
   if (!parsed.length) { out.problems.push('The file is empty.'); return out; }
   const head = parsed[0].map(function (h) { return String(h).trim().toLowerCase().replace(/\s+/g, ' '); });
@@ -71,7 +72,7 @@ function assetRowsFromCsv(parsed) {
     const line = 'Line ' + (r + 1) + ': ';
     const cat = row.Category.toUpperCase().replace(/[\s-]+/g, '_');
     if (!row.AssetID) { out.problems.push(line + 'no AssetID.'); continue; }
-    if (cat !== 'DEVICE' && cat !== 'SD_CARD') { out.problems.push(line + row.AssetID + ': Category must be DEVICE or SD_CARD.'); continue; }
+    if (allowed.indexOf(cat) === -1) { out.problems.push(line + row.AssetID + ': Category must be ' + allowed.join(', ') + '.'); continue; }
     if (seen[row.AssetID]) { out.problems.push(line + row.AssetID + ' appears more than once in the file.'); continue; }
     seen[row.AssetID] = true;
     row.Category = cat;
