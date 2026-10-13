@@ -10,7 +10,7 @@
 
 // Dropdowns and timings come from the Options / Config sheets (action "options"), loaded after sign-in.
 let OPTS = {
-  issueTypes: { DEVICE: [], SD_CARD: [] }, subTypes: { DEVICE: [], SD_CARD: [] },
+  categories: [{ code: 'DEVICE', label: 'Device', worker: true }, { code: 'SD_CARD', label: 'SD card', worker: true }], issueTypes: { DEVICE: [], SD_CARD: [] }, subTypes: { DEVICE: [], SD_CARD: [] },
   ui: { pollSeconds: 45, pickerMax: 50, officeName: 'Office', confirmEveryHours: 4, recentHours: 24, assignBy: '10:00' }
 };
 
@@ -40,7 +40,33 @@ function fmt(iso) {
   return isNaN(d) ? iso : d.toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true });
 }
 function pill(text, cls) { return '<span class="pill ' + (cls || '') + '">' + esc(text) + '</span>'; }
-function catLabel(c) { return c === 'SD_CARD' ? 'SD card' : 'Device'; }
+/** Name of an asset category (Device, SD card, or a category added in Options such as Charger). */
+// The drop-down lists (categories, kinds, issue types) rarely change, so each phone keeps its copy for OPTIONS_CACHE_HOURS (the server tells it how long)
+// instead of asking at every sign-in, and reloads at once when the server's fingerprint of the lists (optionsStamp) differs from its own.
+const OPTS_KEY = 'at_opts_v1';
+function readSavedOpts() { try { const s = JSON.parse(localStorage.getItem(OPTS_KEY) || 'null'); return s && s.data && s.at ? s : null; } catch (e) { return null; } }
+function saveOpts(o) { try { localStorage.setItem(OPTS_KEY, JSON.stringify({ at: Date.now(), data: o })); } catch (e) { /* storage blocked: it just asks again next time */ } }
+function fetchOpts() { return callBackend('options').then(function (o) { saveOpts(o); return o; }); }
+/** The lists: the phone's own copy while it is fresh, else from the server. */
+function loadOpts() {
+  const s = readSavedOpts();
+  if (s && s.data.stamp && Date.now() - s.at < Math.max(0, ((s.data.ui && s.data.ui.optionsCacheHours) || 0)) * 3600000) return Promise.resolve(s.data);
+  return fetchOpts();
+}
+/** Reload the lists now if the server's fingerprint is not the one this phone has. Resolves true when it changed. */
+function syncOpts(serverStamp) {
+  if (!serverStamp || (OPTS && OPTS.stamp === serverStamp)) return Promise.resolve(false);
+  return fetchOpts().then(function (o) { OPTS = o; return true; }).catch(function () { return false; });
+}
+
+function catLabel(c) {
+  const hit = (OPTS.categories || []).find(function (x) { return x.code === c; });
+  if (hit) return hit.label;
+  if (c === 'SD_CARD') return 'SD card';
+  if (c === 'DEVICE' || !c) return 'Device';
+  const t = String(c).toLowerCase().replace(/_/g, ' '); return t.charAt(0).toUpperCase() + t.slice(1);
+}
+function catPrefix(c) { return c === 'DEVICE' ? '' : catLabel(c) + ' '; }
 
 // ===================== TRANSPORT =====================
 
@@ -388,7 +414,7 @@ function assetPickerItems(list, mineOnly) {
   return list.filter(function (a) { return !mineOnly || a.mine; }).map(function (a) {
     const off = a.st !== 'AVAILABLE';
     return {
-      id: a.id, label: (a.c === 'SD_CARD' ? 'SD card ' : '') + (a.t || ''), sub: a.h + ' · ' + a.loc,
+      id: a.id, label: catPrefix(a.c) + (a.t || ''), sub: a.h + ' · ' + a.loc,
       disabled: off, badge: off ? pill(a.st === 'SHORT' ? 'short' : 'in transit', 'warn') : ''
     };
   });
@@ -403,7 +429,7 @@ function othersField(host) {
   function addRow() {
     const div = document.createElement('div');
     div.className = 'card';
-    div.innerHTML = '<div class="fieldRow"><div><label class="f">Type</label><select><option value="DEVICE">Device</option><option value="SD_CARD">SD card</option></select></div>' +
+    div.innerHTML = '<div class="fieldRow"><div><label class="f">Type</label><select>' + (OPTS.categories || []).map(function (c) { return '<option value="' + esc(c.code) + '">' + esc(c.label) + '</option>'; }).join('') + '</select></div>' +
       '<div><label class="f">Kind / model</label><input type="text" placeholder="e.g. Wristcam, 64GB" list="kinds_' + (++otherSeq) + '"><datalist id="kinds_' + otherSeq + '"></datalist></div></div>' +
       '<label class="f">What is it? (ID on it, where found…)</label><input type="text" class="desc"><div style="margin-top:8px"><button class="linkBtn" type="button">Remove</button></div>';
     div.querySelector('button').addEventListener('click', function () { rows.splice(rows.indexOf(div), 1); div.remove(); });
@@ -466,8 +492,11 @@ function startSession(withSync) {
   $('signInError').textContent = '';
   memo = {}; memoEpoch++; lastStamp = '';
   // The two requests run side by side; the home answer is remembered so the first screen draws without asking again.
-  Promise.all([callBackend('home'), callBackend('options')]).then(function (r) {
+  Promise.all([callBackend('home'), loadOpts()]).then(function (r) {
     const h = r[0]; me = h; OPTS = r[1];
+    return syncOpts(h.optionsStamp).then(function () { return r; });   // lists changed on the server since this phone saved them: reload before the first screen
+  }).then(function (r) {
+    const h = r[0];
     $('signedOut').classList.add('hidden');
     $('tabs').classList.remove('hidden'); $('view').classList.remove('hidden');
     $('bellBtn').classList.remove('hidden'); $('signOutBtn').classList.remove('hidden'); $('helpBtn').classList.remove('hidden');
@@ -570,6 +599,7 @@ function poll() {
   if (!me || document.hidden) return;
   callBackend('pulse').then(function (p) {
     me.unread = p.unread; updateBadge();
+    syncOpts(p.optionsStamp);   // a manager changed the lists: this phone picks the new ones up quietly
     const changed = lastStamp && p.stamp !== lastStamp;
     lastStamp = p.stamp;
     if (changed) {
@@ -643,6 +673,7 @@ VIEWS.home = function () {
     html += '<div class="card"><div class="row spread"><div id="scanLine">' + scanLineHtml(null, h) + '</div>' +
       '<div class="row"><button class="btn" data-act="send">Send assets</button><button class="btn secondary" data-act="issue">Report issue</button></div></div>' +
       '<div class="row" style="margin-top:10px">' + pill(devs.length + ' devices here', 'info') + pill(sds.length + ' SD cards here', 'info') +
+      (OPTS.categories || []).filter(function (c) { return !c.worker; }).map(function (c) { const n = h.assets.filter(function (a) { return a.category === c.code; }).length; return n ? pill(n + ' ' + c.label.toLowerCase() + ' here', 'info') : ''; }).join('') +
       (devs.some(function (a) { return a.status !== 'WORKING'; }) ? pill('faulty devices', 'bad') : '') + '</div></div>';
     html += '<div class="card"><h2 style="margin:0">Assets with your team</h2>' +
       '<p class="small muted" style="margin:6px 0 0" id="assetScope">' + assetScopeText(h, null) + '</p>' +
@@ -857,14 +888,14 @@ VIEWS.dash = function () {
       tile(h.openIssues, 'Open issues', '', 'issues') +
       tile(h.provisional, 'Awaiting acknowledgement', h.provisional ? 'warn' : '', 'flags') +
       tile(h.overdueCheckins, 'Overdue check-ins', h.overdueCheckins ? 'warn' : '', 'flags') +
-      tile(d.office.devices + ' / ' + d.office.sdCards, 'Office stock (devices / SD)', '', 'search') + '</div>';
+      tile(d.office.devices + ' / ' + d.office.sdCards + (d.extraCategories || []).map(function (c) { return ' / ' + ((d.office.extras || {})[c.code] || 0); }).join(''), 'Office stock (devices / SD' + (d.extraCategories || []).map(function (c) { return ' / ' + c.label.toLowerCase(); }).join('') + ')', '', 'search') + '</div>';
     html += '<div class="card"><h2>Properties: working devices vs workforce today</h2><div class="tablewrap"><table><thead><tr><th>Property</th><th>Supervisor</th>' +
-      '<th class="num">Workforce</th><th class="num">Working devices</th><th class="num">Needed</th><th>Device gap</th><th class="num">Faulty</th><th class="num">SD cards</th><th class="num">SD needed</th><th>SD gap</th></tr></thead><tbody>' +
+      '<th class="num">Workforce</th><th class="num">Working devices</th><th class="num">Needed</th><th>Device gap</th><th class="num">Faulty</th><th class="num">SD cards</th><th class="num">SD needed</th><th>SD gap</th>' + (d.extraCategories || []).map(function (c) { return '<th class="num">' + esc(c.label) + ' (working / faulty)</th>'; }).join('') + '</tr></thead><tbody>' +
       d.properties.map(function (p) {
         const g = function (n) { return n < 0 ? '<span class="gap-neg">Short ' + (-n) + '</span>' : n > 0 ? '<span class="gap-pos">Surplus ' + n + '</span>' : 'OK'; };
         return '<tr class="clickrow" data-prop="' + esc(p.locationId) + '"><td><b>' + esc(p.name) + '</b> <span class="small" style="color:var(--brand)">details ›</span><div class="small muted">' + esc(p.locationId) + '</div></td><td>' + esc(p.supervisors.join(', ') || '-') + '</td><td class="num">' + p.workforce +
           '</td><td class="num">' + p.devicesWorking + '</td><td class="num">' + p.devicesRequired + '</td><td>' + g(p.deviceGap) + '</td><td class="num">' + p.devicesFaulty +
-          '</td><td class="num">' + p.sdCards + '</td><td class="num">' + p.sdRequired + '</td><td>' + g(p.sdGap) + '</td></tr>';
+          '</td><td class="num">' + p.sdCards + '</td><td class="num">' + p.sdRequired + '</td><td>' + g(p.sdGap) + '</td>' + (d.extraCategories || []).map(function (c) { const x = (p.extras || {})[c.code] || { working: 0, faulty: 0 }; return '<td class="num">' + x.working + (x.faulty ? ' / <span class="gap-neg">' + x.faulty + '</span>' : '') + '</td>'; }).join('') + '</tr>';
       }).join('') + '</tbody></table></div>' +
       (d.unlocated ? '<p class="small muted">' + d.unlocated + ' asset(s) are with a supervisor whose location is not known yet, or at a property that is not in the list.</p>' : '') +
       '<p class="small muted">Workforce is today\'s attendance by Location ID. Only working devices count towards the requirement. ' + (me.role === 'ADMIN' ? '<button class="linkBtn" data-refreshcfg>Refresh settings</button> (settings are cached for a couple of minutes)' : '') + '</p></div>';
@@ -904,6 +935,7 @@ VIEWS.property = function (locationId) {
     html += '<div class="card"><h2>Workforce today, and what each person has</h2>' + (d.workforce.length ? '<div class="tablewrap"><table><thead><tr><th>Person</th><th>Device</th><th>SD cards</th></tr></thead><tbody>' + d.workforce.map(person).join('') + '</tbody></table></div>' : emptyState('Nobody has scanned in here today.')) +
       (d.absentWithItems.length ? '<h3>Not scanned in today, still holding items</h3><div class="tablewrap"><table><tbody>' + d.absentWithItems.map(person).join('') + '</tbody></table></div>' : '') + '</div>';
     html += '<div class="card"><h2>Devices</h2>' + section('Faulty', 'bad', d.devices.faulty) + section('Missing', 'bad', d.devices.missing) + section('Idle (working, nobody has it)', '', d.devices.idle) + section('Assigned', '', d.devices.assigned, true) + '</div>';
+    (d.extras || []).forEach(function (x) { html += '<div class="card"><h2>' + esc(x.label) + '</h2>' + section('Faulty', 'bad', x.group.faulty) + section('Missing', 'bad', x.group.missing) + section('Idle (working, nobody has it)', '', x.group.idle) + section('With a supervisor or worker', '', x.group.assigned, true) + '</div>'; });
     html += '<div class="card"><h2>SD cards</h2>' + section('Faulty', 'bad', d.sdCards.faulty) + section('Missing', 'bad', d.sdCards.missing) + section('Idle (working, nobody has it)', '', d.sdCards.idle) + section('Assigned', '', d.sdCards.assigned, true) + '</div>';
     html += '<div class="card"><h2>Open issues and flags here</h2>' + (d.issues.length ? d.issues.map(function (i) { return '<div class="item"><div class="grow"><b>' + esc(i.assetId) + '</b> · ' + esc(i.type) + '<div class="small muted">' + esc(i.by) + ' · ' + fmt(i.at) + '</div></div>' + pill(i.status.replace('_', ' ').toLowerCase(), 'warn') + '</div>'; }).join('') : '<div class="small muted">No open issues.</div>') +
       (d.flags.length ? '<h3>Flags</h3>' + d.flags.map(function (f) { return '<div class="item"><div class="grow"><b>' + esc(FLAG_TITLES[f.type] || f.type) + '</b> · ' + esc(f.detail) + '</div>' + pill(f.severity.toLowerCase(), f.severity === 'HIGH' ? 'bad' : f.severity === 'MEDIUM' ? 'warn' : 'info') + '</div>'; }).join('') : '') + '</div>';
@@ -1287,7 +1319,7 @@ VIEWS.checkin = function () {
   return callBackend('checkinList').then(function (c) {
     const row = function (a, ticked) {
       return '<label class="item" style="align-items:flex-start;cursor:pointer"><input type="checkbox" class="ck" data-id="' + esc(a.id) + '" data-g="' + a.group + '"' + (ticked ? ' checked' : '') + ' style="margin:4px 10px 0 0">' +
-        '<div class="grow"><b>' + esc(a.id) + '</b> <span class="small muted">' + esc(a.c === 'SD_CARD' ? 'SD card' : 'Device') + (a.t ? ' · ' + esc(a.t) : '') + '</span>' +
+        '<div class="grow"><b>' + esc(a.id) + '</b> <span class="small muted">' + esc(catLabel(a.c)) + (a.t ? ' · ' + esc(a.t) : '') + '</span>' +
         '<div class="small">' + (a.group === 'OLD' ? pill('From ' + a.at, 'warn') : (a.group === 'HERE' ? pill('Already here', 'info') + ' <span class="muted">with ' + esc(a.holder) + '</span>' : pill('With you', 'ok'))) +
         (a.assigned ? ' ' + pill('handed out', '') : '') + '</div></div></label>';
     };
@@ -1413,7 +1445,7 @@ VIEWS.issue = function (preset) {
   const photo = photoField($('photoHost'), 'Photo (recommended; used for all selected)');
   return cachedCall('picker', {}, 30000).then(function (all) {
     const byId = {}; all.forEach(function (a) { byId[a.id] = a; });
-    const items = all.map(function (a) { return { id: a.id, label: (a.c === 'SD_CARD' ? 'SD card ' : '') + (a.t || ''), sub: a.h + ' · ' + a.loc, badge: a.oi && a.oi.length ? pill('already reported', 'warn') : '' }; });
+    const items = all.map(function (a) { return { id: a.id, label: catPrefix(a.c) + (a.t || ''), sub: a.h + ' · ' + a.loc, badge: a.oi && a.oi.length ? pill('already reported', 'warn') : '' }; });
     let allRepeats = false;
     // What is already open on the chosen devices, against the type chosen now. Same type = a repeat that would do nothing.
     const paintDups = function () {
@@ -1431,12 +1463,13 @@ VIEWS.issue = function (preset) {
       else b.textContent = ids.length > 1 ? 'Report issue on ' + ids.length + ' items' : 'Report issue';
     };
     const paintTypes = function (ids) {
-      const counts = { DEVICE: 0, SD_CARD: 0 };
-      ids.forEach(function (id) { if (byId[id]) counts[byId[id].c]++; });
-      $('typeHost').innerHTML = ['DEVICE', 'SD_CARD'].filter(function (c) { return counts[c]; }).map(function (c) {
+      const counts = {}, cats = (OPTS.categories || []).map(function (c) { return c.code; });
+      cats.forEach(function (c) { counts[c] = 0; });
+      ids.forEach(function (id) { if (byId[id]) counts[byId[id].c] = (counts[byId[id].c] || 0) + 1; });
+      $('typeHost').innerHTML = cats.filter(function (c) { return counts[c]; }).map(function (c) {
         const prev = $('type_' + c) ? $('type_' + c).value : '';
-        return '<label class="f">Issue type for ' + counts[c] + ' ' + (c === 'SD_CARD' ? 'SD card' : 'device') + (counts[c] > 1 ? 's' : '') + '</label><select id="type_' + c + '">' +
-          OPTS.issueTypes[c].map(function (t) { return '<option' + (t.value === prev ? ' selected' : '') + '>' + esc(t.value) + '</option>'; }).join('') + '</select>';
+        return '<label class="f">Issue type for ' + counts[c] + ' ' + catLabel(c).toLowerCase() + (counts[c] > 1 ? 's' : '') + '</label><select id="type_' + c + '">' +
+          (OPTS.issueTypes[c] || []).map(function (t) { return '<option' + (t.value === prev ? ' selected' : '') + '>' + esc(t.value) + '</option>'; }).join('') + '</select>';
       }).join('');
       paintDups();
     };
@@ -1448,7 +1481,7 @@ VIEWS.issue = function (preset) {
       const ids = picker.selected();
       if (!ids.length) return toast('Pick at least one device or SD card.', true);
       const typeByCategory = {};
-      ['DEVICE', 'SD_CARD'].forEach(function (c) { if ($('type_' + c)) typeByCategory[c] = $('type_' + c).value; });
+      (OPTS.categories || []).forEach(function (cc) { const c = cc.code; if ($('type_' + c)) typeByCategory[c] = $('type_' + c).value; });
       busy(e.target, function () {
         const f = photo.file();   // the report goes through now; the photo follows in the background
         return callBackend('reportIssues', { assetIds: ids, typeByCategory: typeByCategory, description: $('desc').value, photoPending: !!f }).then(function (r) {
@@ -1660,7 +1693,13 @@ function manageForm(m, tbl, row) {
     const lockedCell = locked.indexOf(c.n) !== -1, off = lockedCell || (editing && isKey);
     html += '<label class="f">' + esc(c.label) + (c.required && !c.allowBlank ? '' : ' <span class="muted">(optional)</span>') + '</label>';
     const id = 'mf_' + c.n;
-    if (c.type === 'enum' || c.type === 'supervisor') {
+    if (c.type === 'optgroup') {
+      const known = {}; c.values.forEach(function (g) { known[g] = true; });
+      (m.tables.Options.rows || []).forEach(function (r) { if (r.v && r.v.Group) known[r.v.Group] = true; });
+      html += '<input type="text" id="' + id + '" list="' + id + '_dl" value="' + esc(val) + '"' + (off ? ' disabled' : '') + ' placeholder="e.g. SUBTYPE_OTHERS" autocapitalize="characters"><datalist id="' + id + '_dl">' +
+        Object.keys(known).sort().map(function (g) { return '<option value="' + esc(g) + '">'; }).join('') + '</datalist>' +
+        '<div class="small muted">Type <b>SUBTYPE_</b> and a name (for example SUBTYPE_OTHERS) to add a new asset category with that name; its rows are the kinds to pick from. <b>ISSUE_</b> and the same name sets its issue types.</div>';
+    } else if (c.type === 'enum' || c.type === 'supervisor') {
       let opts;
       if (c.type === 'supervisor') opts = [['', '(no supervisor)']].concat(m.choices.supervisors.map(function (s) { return [s.email, s.name]; }));
       else if (c.n === 'CurrentLocationID') opts = [['', '(none)']].concat(m.choices.properties.map(function (p) { return [p.id, p.name + ' (' + p.id + ')']; }));
@@ -1687,21 +1726,22 @@ function manageOpenForm(m, tbl, row) {
     if (tbl.table === 'Options') {
       const eff = box.querySelector('#mf_Effect'), grp = box.querySelector('#mf_Group'), hint = box.querySelector('#mf_effect_hint');
       const paintEffect = function () {
-        const g = grp.value; let opts = [['', '(none)']], h = '';
-        if (g === 'ISSUE_DEVICE' || g === 'ISSUE_SD_CARD') { opts = [['DISABLES', 'DISABLES: stops counting as working'], ['KEEPS_WORKING', 'KEEPS_WORKING: still usable'], ['MISSING', 'MISSING: marks it missing']]; h = 'What happens to a device or SD card when this problem is reported.'; }
+        const g = grp.value.trim().toUpperCase().replace(/[\s-]+/g, '_'); let opts = [['', '(none)']], h = '';
+        if (/^ISSUE_/.test(g)) { opts = [['DISABLES', 'DISABLES: stops counting as working'], ['KEEPS_WORKING', 'KEEPS_WORKING: still usable'], ['MISSING', 'MISSING: marks it missing']]; h = 'What happens to a device or SD card when this problem is reported.'; }
         else if (g === 'FLAG_SEVERITY') { opts = [['HIGH', 'HIGH'], ['MEDIUM', 'MEDIUM'], ['LOW', 'LOW']]; h = 'How urgent this kind of alert is.'; }
         else if (g === 'TEAM_ALIAS') { opts = m.choices.supervisors.map(function (s) { return [s.id, s.name + ' (' + s.id + ')']; }); h = 'The team name in the team list means this supervisor.'; }
         else h = 'This list has no rule.';
         const cur = row ? row.v.Effect : '';
         eff.innerHTML = opts.map(function (o) { return '<option value="' + esc(o[0]) + '"' + (o[0] === cur ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join(''); hint.textContent = h;
       };
-      grp.addEventListener('change', paintEffect); paintEffect();
+      grp.addEventListener('input', paintEffect); grp.addEventListener('change', paintEffect); paintEffect();
     }
     const msg = function (t, bad) { const e = box.querySelector('#mfMsg'); e.textContent = t; e.style.color = bad ? 'var(--bad)' : ''; };
     const send = function (payload, btn) {
       busy(btn, function () {
         return callBackend('managerSave', Object.assign({ table: tbl.table }, payload)).then(function (r) {
           closeModal();
+          if (r.changed && (tbl.table === 'Options' || tbl.table === 'Config')) syncOpts('changed');   // reload the lists on this device right away
           toast(r.changed ? 'Saved' : 'Nothing changed'); (r.warnings || []).concat(r.notes || []).forEach(function (w) { setTimeout(function () { toast(w); }, 700); });
           go('manage', true);
         }).catch(function (e) { msg(e.message, true); });
@@ -1781,7 +1821,7 @@ VIEWS.manage = function () {
       sec('Supervisors', 'Supervisors', T.Supervisors.rows.length, listFor('Supervisors')) +
       sec('Properties', 'Properties and their supervisor', T.Properties.rows.length, listFor('Properties')) +
       sec('Admins', 'Admins, ops and managers', T.Admins.rows.length, listFor('Admins')) +
-      sec('Options', 'Options (drop-down lists and rules)', T.Options.rows.length, '<select id="optGroup" style="margin-bottom:8px"><option value="">All lists</option>' + ['ISSUE_DEVICE', 'ISSUE_SD_CARD', 'SUBTYPE_DEVICE', 'SUBTYPE_SD_CARD', 'FLAG_SEVERITY', 'TEAM_ALIAS'].map(function (g) { return '<option>' + g + '</option>'; }).join('') + '</select><div id="optList">' + listFor('Options') + '</div>') +
+      sec('Options', 'Options (drop-down lists and rules)', T.Options.rows.length, '<select id="optGroup" style="margin-bottom:8px"><option value="">All lists</option>' + (function () { const k = {}; ['ISSUE_DEVICE', 'ISSUE_SD_CARD', 'SUBTYPE_DEVICE', 'SUBTYPE_SD_CARD', 'FLAG_SEVERITY', 'TEAM_ALIAS'].forEach(function (g) { k[g] = 1; }); T.Options.rows.forEach(function (r) { if (r.v && r.v.Group) k[r.v.Group] = 1; }); return Object.keys(k).sort(); })().map(function (g) { return '<option>' + g + '</option>'; }).join('') + '</select><div id="optList">' + listFor('Options') + '</div>') +
       sec('Shift_Times', 'Shift times', T.Shift_Times.rows.length, listFor('Shift_Times')) +
       sec('Config', 'Settings', T.Config.rows.length, listFor('Config')) +
       sec('links', 'Property links and details (upcoming)', m.propertyLinks.rows.length, '<div id="stayHost">' + manageStayList(m) + '</div>') +
@@ -1852,7 +1892,7 @@ VIEWS.help = function () {
 
 // ---- Assets (admin) ----
 VIEWS.assets = function () {
-  $('view').innerHTML = '<div class="card"><h2>Add assets</h2><p class="small muted">One per line: <code>AssetID, DEVICE or SD_CARD, kind, serial, capacity</code>. New assets start in your custody at the Office. Existing IDs are skipped. For the first big import use <code>importAssetsFromTab()</code> in the script (see docs).</p>' +
+  $('view').innerHTML = '<div class="card"><h2>Add assets</h2><p class="small muted">One per line: <code>AssetID, category, kind, serial, capacity</code> (category: ' + (OPTS.categories || []).map(function (c) { return '<code>' + esc(c.code) + '</code>'; }).join(', ') + '). New assets start in your custody at the Office. Existing IDs are skipped. For the first big import use <code>importAssetsFromTab()</code> in the script (see docs).</p>' +
     '<textarea id="bulk" style="min-height:140px" placeholder="D401, DEVICE, Android Phone, SN12345,&#10;SD401, SD_CARD, 128GB, , 128GB"></textarea><div class="row" style="margin-top:10px"><button class="btn" id="addBulk">Add assets</button></div><div id="bulkResult" class="small"></div></div>' +
     '<div class="card"><h2>Import from a CSV file</h2><p class="small muted">For many assets at once. Download the template, fill it in, then choose the file. You see a summary before anything is saved. Columns: AssetID, Category (DEVICE or SD_CARD), SubType, Serial, Capacity, HolderEmail (optional).</p>' +
     '<div class="row"><button class="btn secondary" id="csvTemplate">Download CSV template</button><label class="btn" for="csvFile" style="margin:0">Choose CSV file</label><input type="file" id="csvFile" accept=".csv,text/csv" class="hidden"></div>' +
@@ -1885,7 +1925,7 @@ function wireCsvImport() {
     const f = e.target.files && e.target.files[0]; if (!f) return;
     const reader = new FileReader();
     reader.onload = function () {
-      const res = assetRowsFromCsv(parseCsv(String(reader.result)));
+      const res = assetRowsFromCsv(parseCsv(String(reader.result)), (OPTS.categories || []).map(function (c) { return c.code; }));
       pending = res.rows;
       const prob = res.problems.length ? '<div style="margin-top:6px"><b>' + res.problems.length + ' row' + (res.problems.length > 1 ? 's' : '') + ' will be left out:</b><ul style="margin:4px 0 0 18px">' +
         res.problems.slice(0, 15).map(function (p) { return '<li>' + esc(p) + '</li>'; }).join('') + (res.problems.length > 15 ? '<li>and ' + (res.problems.length - 15) + ' more</li>' : '') + '</ul></div>' : '';
@@ -1982,7 +2022,7 @@ document.addEventListener('click', function (e) {
   if (d.issueFor) return go('issue', false, [d.issueFor]);
   if (d.sendFor) return go('newTransfer', false, [d.sendFor]);
   if (d.bar !== undefined) { const fn = barHandlers[d.bar]; if (fn) fn(); return; }
-  if (d.refreshcfg !== undefined) return busy(t, function () { return callBackend('refreshConfig', {}).then(function () { return callBackend('options'); }).then(function (o) { OPTS = o; toast('Settings refreshed'); }); });
+  if (d.refreshcfg !== undefined) return busy(t, function () { return callBackend('refreshConfig', {}).then(function () { return fetchOpts(); }).then(function (o) { OPTS = o; toast('Settings refreshed'); }); });
   if (d.asset) { e.preventDefault(); return go('search', false, d.asset); }
   if (d.issue) {
     const note = $('res_' + d.issue);
