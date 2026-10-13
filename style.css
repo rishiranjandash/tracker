@@ -185,3 +185,9 @@ label.btn { display: inline-block; cursor: pointer; }
 /* a photo is still uploading in the background (or failed: tap to retry) */
 .photoStatus { position: fixed; left: 10px; bottom: 70px; z-index: 55; border: 0; background: var(--ink); color: var(--bg); font-size: 12px; padding: 7px 12px; border-radius: 16px; opacity: .92; cursor: pointer; max-width: 80vw; }
 .photoStatus.bad { background: var(--bad); color: #fff; }
+
+/* search suggestions under the box */
+.sug { margin-top: 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); max-height: 46vh; overflow-y: auto; }
+.sug .opt { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); cursor: pointer; }
+.sug .opt:first-child { border-top: 0; }
+.sug .opt:hover, .sug .opt.on { background: var(--info-bg); }
