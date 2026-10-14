@@ -71,7 +71,7 @@ function catPrefix(c) { return c === 'DEVICE' ? '' : catLabel(c) + ' '; }
 // ===================== TRANSPORT =====================
 
 // Actions that only read. Everything else is a save, which wipes the screen memo below.
-const READS = { officeStock: 1, checkinList: 1, managerOverview: 1, saveLocation: 1, stays: 1, home: 1, picker: 1, search: 1, issues: 1, flags: 1, notifications: 1, supervisors: 1, properties: 1, supervisorList: 1, team: 1, assignments: 1, report: 1, options: 1, transfers: 1, pulse: 1, photoGet: 1, sync: 1 };
+const READS = { officeStock: 1, checkinList: 1, managerOverview: 1, saveLocation: 1, stays: 1, home: 1, picker: 1, search: 1, issues: 1, flags: 1, notifications: 1, supervisors: 1, properties: 1, supervisorList: 1, team: 1, assignments: 1, report: 1, options: 1, transfers: 1, transferHistory: 1, pulse: 1, photoGet: 1, sync: 1 };
 const NO_MEMO = { saveLocation: 1, search: 1, report: 1, photoGet: 1, pulse: 1, sync: 1, notifications: 1 };
 let memo = {};          // last answer for each read, so a screen can be drawn instantly while a fresh answer loads
 let memoEpoch = 0;      // bumped by every save, so an answer that was in flight during a save is not remembered
@@ -1275,9 +1275,34 @@ VIEWS.transfers = function () {
     if (rest.length) html += '<h3>' + (me.role === 'SUPERVISOR' ? 'Sent by you / recently received' : 'Other open transfers') + '</h3>' + rest.map(transferCard).join('');
     if (!list.length) html += '<div class="card">' + emptyState('Nothing in transit.') + '</div>';
     if (me.role === 'SUPERVISOR') html += '<p class="small muted">Received transfers stay visible for ' + OPTS.ui.recentHours + ' hours.</p>';
+    html += '<h3>Transfer history</h3><div class="card"><div class="row" style="gap:8px;flex-wrap:wrap;align-items:flex-end">' +
+      '<label class="grow small muted" style="min-width:130px">From<input type="date" id="histFrom" value="' + esc(histFrom) + '"></label>' +
+      '<label class="grow small muted" style="min-width:130px">To<input type="date" id="histTo" value="' + esc(histTo) + '"></label>' +
+      '<button class="btn secondary small" id="histClear"' + (histFrom || histTo ? '' : ' style="display:none"') + '>Latest 6</button></div></div><div id="histList"></div>';
     $('view').innerHTML = html;
+    const reload = function () { histFrom = $('histFrom').value; histTo = $('histTo').value; $('histClear').style.display = histFrom || histTo ? '' : 'none'; loadHistory(); };
+    $('histFrom').addEventListener('change', reload); $('histTo').addEventListener('change', reload);
+    $('histClear').addEventListener('click', function () { $('histFrom').value = ''; $('histTo').value = ''; reload(); });
+    loadHistory();
   });
 };
+
+// Closed transfers: the latest few by default, or everything between the chosen dates.
+let histFrom = '', histTo = '';
+function loadHistory() {
+  const box = $('histList'); if (!box) return;
+  const myNav = navId, payload = {};
+  if (histFrom) payload.from = new Date(histFrom + 'T00:00:00').toISOString();
+  if (histTo) payload.to = new Date(histTo + 'T23:59:59.999').toISOString();
+  if (histFrom && histTo && histFrom > histTo) { box.innerHTML = '<div class="card"><div class="small muted">"From" is after "To".</div></div>'; return; }
+  box.innerHTML = '<div class="empty">Loading…</div>';
+  callBackend('transferHistory', payload).then(function (r) {
+    if (myNav !== navId || $('histList') !== box) return;
+    box.innerHTML = r.transfers.length ? r.transfers.map(transferCard).join('') +
+      (r.more ? '<p class="small muted">Showing the latest ' + r.transfers.length + '. Narrow the dates to see others.</p>' : '')
+      : '<div class="card">' + emptyState(r.ranged ? 'No closed transfers in these dates.' : 'No closed transfers yet.') + '</div>';
+  }).catch(function (e) { if ($('histList') === box) box.innerHTML = '<div class="card"><div class="small muted">Could not load the history. ' + esc(e && e.message || '') + '</div></div>'; });
+}
 
 function openReceive(transferId) {
   const t = currentTransfers.find(function (x) { return x.id === transferId; });
