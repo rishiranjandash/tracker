@@ -191,3 +191,13 @@ label.btn { display: inline-block; cursor: pointer; }
 .sug .opt { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); cursor: pointer; }
 .sug .opt:first-child { border-top: 0; }
 .sug .opt:hover, .sug .opt.on { background: var(--info-bg); }
+
+/* a button that is working: spinner and wording, so it never looks like the tap was missed */
+button.btn.loading, button.btn.loading:disabled { opacity: .85; cursor: progress; }
+button.btn.loading::before { content: ''; display: inline-block; width: .85em; height: .85em; margin-right: .5em; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; vertical-align: -.1em; animation: atspin .7s linear infinite; }
+@keyframes atspin { to { transform: rotate(360deg); } }
+/* thin moving bar at the very top while a request is slow */
+#netBar { position: fixed; left: 0; right: 0; top: 0; height: 3px; z-index: 300; overflow: hidden; display: none; pointer-events: none; }
+#netBar.on { display: block; }
+#netBar::after { content: ''; position: absolute; top: 0; bottom: 0; left: -35%; width: 35%; background: var(--brand); animation: atbar 1s ease-in-out infinite; }
+@keyframes atbar { from { left: -35%; } to { left: 100%; } }
