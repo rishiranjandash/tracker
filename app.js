@@ -71,7 +71,7 @@ function catPrefix(c) { return c === 'DEVICE' ? '' : catLabel(c) + ' '; }
 // ===================== TRANSPORT =====================
 
 // Actions that only read. Everything else is a save, which wipes the screen memo below.
-const READS = { officeStock: 1, checkinList: 1, managerOverview: 1, saveLocation: 1, stays: 1, home: 1, picker: 1, search: 1, issues: 1, flags: 1, notifications: 1, supervisors: 1, properties: 1, supervisorList: 1, team: 1, assignments: 1, report: 1, options: 1, transfers: 1, transferHistory: 1, pulse: 1, photoGet: 1, sync: 1 };
+const READS = { officeStock: 1, checkinList: 1, managerOverview: 1, saveLocation: 1, stays: 1, home: 1, picker: 1, search: 1, issues: 1, flags: 1, notifications: 1, supervisors: 1, properties: 1, supervisorList: 1, team: 1, assignments: 1, report: 1, options: 1, transfers: 1, transferHistory: 1, officeBatches: 1, pulse: 1, photoGet: 1, sync: 1 };
 const NO_MEMO = { saveLocation: 1, search: 1, report: 1, photoGet: 1, pulse: 1, sync: 1, notifications: 1 };
 let memo = {};          // last answer for each read, so a screen can be drawn instantly while a fresh answer loads
 let memoEpoch = 0;      // bumped by every save, so an answer that was in flight during a save is not remembered
@@ -1271,6 +1271,7 @@ VIEWS.transfers = function () {
     const rest = list.filter(function (t) { return mineIncoming.indexOf(t) === -1; });
     let html = '<div class="stickyHead flat"><div class="row spread"><h2 style="margin:0">Transfers</h2><button class="btn" data-act="send">' +
       (me.role === 'ADMIN' ? 'Dispatch to supervisor' : 'Send assets') + '</button></div></div>';
+    if (me.role === 'ADMIN') html += '<div id="officeBatches"></div>';
     if (mineIncoming.length) html += '<h3>' + (me.role === 'ADMIN' ? 'In transit - waiting for you to confirm' : 'Coming to you') + '</h3>' + mineIncoming.map(transferCard).join('');
     if (rest.length) html += '<h3>' + (me.role === 'SUPERVISOR' ? 'Sent by you / recently received' : 'Other open transfers') + '</h3>' + rest.map(transferCard).join('');
     if (!list.length) html += '<div class="card">' + emptyState('Nothing in transit.') + '</div>';
@@ -1284,8 +1285,119 @@ VIEWS.transfers = function () {
     $('histFrom').addEventListener('change', reload); $('histTo').addEventListener('change', reload);
     $('histClear').addEventListener('click', function () { $('histFrom').value = ''; $('histTo').value = ''; reload(); });
     loadHistory();
+    if (me.role === 'ADMIN') loadOffice();
   });
 };
+
+// ---- In the Office: what a supervisor sent in is received, (SD cards) uploaded, then sent back or kept ----
+const OFFICE_STEPS = ['RECEIVED', 'UPLOADING', 'UPLOADED'];
+let officeData = null, officeSup = [], batchSel = {};   // batchSel[batchId][assetId] = ticked
+function officeAgo(iso) {
+  const m = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
+  return m < 1 ? 'just now' : m < 60 ? m + ' min ago' : Math.floor(m / 60) + ' h ' + (m % 60) + ' min ago';
+}
+function loadOffice() {
+  const myNav = navId;
+  if (officeData) paintOffice();
+  return Promise.all([callBackend('officeBatches'), callBackend('supervisorList')]).then(function (r) {
+    if (myNav !== navId) return;
+    officeData = r[0]; officeSup = r[1]; paintOffice();
+  }).catch(function (e) { const h = $('officeBatches'); if (h && !officeData) h.innerHTML = '<div class="card"><div class="small muted">Could not load what is waiting in the Office. ' + esc(e && e.message || '') + '</div></div>'; });
+}
+function officeGroup(b, items, isSd) {
+  const picked = batchSel[b.id] = batchSel[b.id] || {};
+  if (!items.some(function (i) { return picked[i.id] !== undefined; })) {   // first look: tick everything at the earliest step
+    const first = Math.min.apply(null, items.map(function (i) { return OFFICE_STEPS.indexOf(i.stage); }));
+    items.forEach(function (i) { picked[i.id] = OFFICE_STEPS.indexOf(i.stage) === first; });
+  }
+  items.forEach(function (i) { if (picked[i.id] === undefined) picked[i.id] = false; });
+  const chosen = items.filter(function (i) { return picked[i.id]; });
+  const stages = {}; chosen.forEach(function (i) { stages[i.stage] = true; });
+  const same = Object.keys(stages).length === 1 ? Object.keys(stages)[0] : '';
+  const canAct = officeData.canAct;
+  const names = { RECEIVED: 'Received', UPLOADING: 'Uploading', UPLOADED: 'Upload complete' };
+  let h = '<div style="margin-top:12px"><b>' + (isSd ? 'SD cards' : 'Devices and other items') + ' (' + items.length + ')</b>';
+  if (isSd) {
+    h += '<div class="row" style="gap:6px;margin:6px 0;flex-wrap:wrap">' + ['Received', 'Upload started', 'Upload done', 'Sent back'].map(function (n, ix) {
+      const on = same && OFFICE_STEPS.indexOf(same) >= ix;
+      return '<span class="pill ' + (on ? 'ok' : '') + '" style="opacity:' + (on ? 1 : .55) + '">' + n + '</span>';
+    }).join('<span class="muted">›</span>') + '</div><div class="small muted">' +
+      OFFICE_STEPS.map(function (s) { const n = items.filter(function (i) { return i.stage === s; }).length; return n ? names[s] + ' ' + n : ''; }).filter(Boolean).join(' · ') + '</div>';
+    const started = items.filter(function (i) { return i.stage === 'UPLOADING' && i.stageAt; }).map(function (i) { return Date.parse(i.stageAt); });
+    if (started.length) h += '<div class="small muted">Upload started ' + fmt(new Date(Math.min.apply(null, started)).toISOString()) + ' · ' + officeAgo(new Date(Math.min.apply(null, started)).toISOString()) + '</div>';
+  }
+  h += '<div class="chips" style="margin-top:8px">' + items.map(function (i) {
+    return '<label class="chip" style="cursor:pointer;display:inline-flex;gap:6px;align-items:center"><input type="checkbox" data-opick="' + esc(b.id) + '" value="' + esc(i.id) + '"' + (picked[i.id] ? ' checked' : '') + (canAct ? '' : ' disabled') + '> ' + esc(i.id) +
+      (isSd && i.stage !== 'RECEIVED' ? ' <span class="small muted">' + (i.stage === 'UPLOADING' ? 'uploading' : 'uploaded') + '</span>' : '') + (i.openIssues ? ' <span class="pill warn">issue open</span>' : '') + '</label>';
+  }).join('') + '</div>';
+  if (!canAct) return h + '</div>';
+  const goesBack = !isSd || same === 'UPLOADED';
+  if (goesBack && chosen.length) {
+    const sups = officeSup.slice();
+    if (b.fromId && !sups.some(function (s) { return s.id === b.fromId; })) sups.unshift({ id: b.fromId, name: b.from });
+    sups.sort(function (x, y) { return (x.id === b.fromId ? 0 : 1) - (y.id === b.fromId ? 0 : 1); });
+    h += '<label class="small muted" style="display:block;margin-top:8px">Send back to<select data-odest="' + esc(b.id) + '">' + sups.map(function (s) {
+      return '<option value="' + esc(s.id) + '">' + esc(s.name) + (s.id === b.fromId ? ' (where it came from)' : '') + '</option>';
+    }).join('') + '</select></label>';
+  }
+  const label = isSd ? { RECEIVED: 'Upload process started', UPLOADING: 'Upload process completed', UPLOADED: 'Send back' }[same] : 'Send back';
+  h += '<div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap">' +
+    '<button class="btn" data-onext="' + esc(b.id) + '" data-sd="' + (isSd ? 1 : 0) + '"' + (!chosen.length || (isSd && !same) ? ' disabled' : '') + '>' +
+      (chosen.length && (same || !isSd) ? esc(label) + ' (' + chosen.length + ')' : chosen.length ? 'Tick cards at the same step' : 'Tick the cards to continue') + '</button>' +
+    '<button class="btn secondary small" data-okeep="' + esc(b.id) + '" data-sd="' + (isSd ? 1 : 0) + '"' + (chosen.length ? '' : ' disabled') + '>Keep in Office</button>' +
+    (isSd && same && same !== 'RECEIVED' ? '<button class="linkBtn" data-oback="' + esc(b.id) + '">Step back</button>' : '') + '</div>';
+  return h + '</div>';
+}
+function paintOffice() {
+  const host = $('officeBatches'); if (!host || !officeData) return;
+  if (!officeData.batches.length) { host.innerHTML = ''; return; }
+  host.innerHTML = '<h3>In the Office</h3>' + officeData.batches.map(function (b) {
+    const sd = b.items.filter(function (i) { return i.usesUpload; }), other = b.items.filter(function (i) { return !i.usesUpload; });
+    return '<div class="card"><div class="row spread"><div><b>' + esc(b.id) + '</b> · from ' + esc(b.from || '-') +
+      '<div class="small muted">received ' + fmt(b.receivedAt) + ' by ' + esc(b.receivedBy) + '</div></div>' + pill(b.items.length + ' in Office', 'info') + '</div>' +
+      (sd.length ? officeGroup(b, sd, true) : '') + (other.length ? officeGroup(b, other, false) : '') + '</div>';
+  }).join('');
+  const batchOf = function (id) { return officeData.batches.find(function (x) { return x.id === id; }); };
+  const picked = function (id, isSd) { const b = batchOf(id); return { b: b, items: b.items.filter(function (i) { return batchSel[id][i.id] && !!i.usesUpload === isSd; }) }; };
+  const ids = function (p) { return p.items.map(function (i) { return i.id; }); };
+  host.querySelectorAll('[data-opick]').forEach(function (c) { c.addEventListener('change', function () { batchSel[c.dataset.opick][c.value] = c.checked; paintOffice(); }); });
+  host.querySelectorAll('[data-onext]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      const p = picked(btn.dataset.onext, btn.dataset.sd === '1'), stage = p.items[0].stage;
+      if (btn.dataset.sd === '1' && stage !== 'UPLOADED') {
+        return busy(btn, function () {
+          return callBackend('officeStep', { assetIds: ids(p), step: stage === 'RECEIVED' ? 'START' : 'DONE' }).then(function () {
+            toast(p.items.length + ' SD card(s): ' + (stage === 'RECEIVED' ? 'upload started' : 'upload complete')); return loadOffice();
+          });
+        });
+      }
+      const d = host.querySelector('[data-odest="' + p.b.id + '"]');
+      busy(btn, function () {
+        return callBackend('createTransfer', { toType: 'SUPERVISOR', toId: d ? d.value : p.b.fromId, assetIds: ids(p), note: 'Sent back from the Office' }).then(function (r) {
+          toast(r.itemCount + ' item(s) sent back · ' + r.transferId); go('transfers', true);
+        });
+      });
+    });
+  });
+  host.querySelectorAll('[data-okeep]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      const p = picked(btn.dataset.okeep, btn.dataset.sd === '1');
+      if (!btn.dataset.armed) {   // tap twice: a stray tap does not keep anything
+        btn.dataset.armed = '1'; btn.textContent = 'Tap again to keep ' + p.items.length + ' here'; btn.classList.remove('secondary');
+        setTimeout(function () { if (btn.isConnected && btn.dataset.armed) paintOffice(); }, 4000); return;
+      }
+      busy(btn, function () {
+        return callBackend('officeStep', { assetIds: ids(p), step: 'KEEP' }).then(function () { toast(p.items.length + ' kept in the Office'); return loadOffice(); });
+      });
+    });
+  });
+  host.querySelectorAll('[data-oback]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      const p = picked(btn.dataset.oback, true);
+      busy(btn, function () { return callBackend('officeStep', { assetIds: ids(p), step: 'UNDO' }).then(loadOffice); });
+    });
+  });
+}
 
 // Closed transfers: the latest few by default, or everything between the chosen dates.
 let histFrom = '', histTo = '';
