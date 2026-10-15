@@ -205,6 +205,26 @@ function compressPhoto(file) {
 
 /** Uploads an already shrunk photo (base64 JPEG) and resolves with its file id. */
 function uploadB64(kind, refLabel, b64) {
+  // First choice: send it as plain text and read the answer directly (no hidden page, nothing to be blocked). Only if that cannot be done at all
+  // (network or browser refusal, not an answer from the server) the older hidden-form route is tried.
+  return uploadFetch_(kind, refLabel, b64).catch(function (e) {
+    if (e && e.fromServer) throw e;
+    return uploadViaForm_(kind, refLabel, b64);
+  });
+}
+function uploadFetch_(kind, refLabel, b64) {
+  const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = setTimeout(function () { if (ctl) ctl.abort(); }, 60000);
+  const body = JSON.stringify({ sessionToken: sessionToken || undefined, googleIdToken: sessionToken ? undefined : idToken, kind: kind, refLabel: refLabel, mime: 'image/jpeg', base64: b64, requestId: 'f' + Date.now() });
+  return fetch(CONFIG.APPS_SCRIPT_URL, { method: 'POST', body: body, headers: { 'Content-Type': 'text/plain;charset=utf-8' }, redirect: 'follow', signal: ctl ? ctl.signal : undefined })
+    .then(function (r) { return r.text(); })
+    .then(function (t) {
+      let j; try { j = JSON.parse(t); } catch (e) { throw new Error('Unreadable answer from the server.'); }
+      if (j && j.ok) return j.data.fileId;
+      const err = new Error((j && j.error) || 'Photo upload failed.'); err.fromServer = true; throw err;
+    }).then(function (v) { clearTimeout(timer); return v; }, function (e) { clearTimeout(timer); throw e; });
+}
+function uploadViaForm_(kind, refLabel, b64) {
   const p = { b64: b64 };
   {
     return new Promise(function (resolve, reject) {
@@ -218,17 +238,18 @@ function uploadB64(kind, refLabel, b64) {
       // the session token is what a signed-in device holds; the Google token alone is missing or too old on most devices
       inp.value = JSON.stringify({ sessionToken: sessionToken || undefined, googleIdToken: sessionToken ? undefined : idToken, kind: kind, refLabel: refLabel, mime: 'image/jpeg', base64: p.b64, requestId: reqId });
       form.appendChild(inp);
-      let timer;
+      let timer, badOrigin = '';
       function finish() { clearTimeout(timer); window.removeEventListener('message', onMsg); iframe.remove(); form.remove(); }
       function onMsg(e) {
         const m = e.data && e.data.assetTrackerUpload;
         if (!m || m.requestId !== reqId) return;
-        if (!/googleusercontent\.com$/.test(new URL(e.origin).hostname)) return;
+        let host = ''; try { host = new URL(e.origin).hostname; } catch (x) { host = String(e.origin); }
+        if (!/googleusercontent\.com$/.test(host)) { badOrigin = host; return; }   // remembered so a failure can say where the answer came from
         finish();
         if (m.result && m.result.ok) resolve(m.result.data.fileId); else reject(new Error((m.result && m.result.error) || 'Photo upload failed.'));
       }
       window.addEventListener('message', onMsg);
-      timer = setTimeout(function () { finish(); reject(new Error('The photo upload is taking too long.')); }, 90000);
+      timer = setTimeout(function () { finish(); reject(new Error('The photo upload is taking too long.' + (badOrigin ? ' (answer came from ' + badOrigin + ')' : ''))); }, 90000);
       document.body.appendChild(iframe); document.body.appendChild(form); form.submit();
     });
   }
