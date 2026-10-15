@@ -110,21 +110,118 @@ function userIsBusy() {
 function swr(action, payload, render) {
   const key = memoKey(action, payload);
   const hit = memo[key];
-  const myNav = navId;
-  if (hit) render(hit.data, true);
+  const myNav = navId, t0 = performance.now();
+  if (hit) { render(hit.data, true); perfScreen(action, 0, true); }
   if (hit && Date.now() - hit.at < 15000) return Promise.resolve(hit.data);
   if (!hit) $('view').innerHTML = '<div class="empty">Loading…</div>';   // nothing to show yet: never leave the previous screen under the new tab
   return callBackend(action, payload).then(function (data) {
     if (myNav !== navId) return data;                                   // they navigated elsewhere while we waited
-    if (!hit) render(data, false);
+    if (!hit) { render(data, false); perfScreen(action, performance.now() - t0, false); }
     else if (JSON.stringify(hit.data) !== JSON.stringify(data) && !userIsBusy()) render(data, false);
     return data;
   });
 }
 
+// ---- Speed check: how long each call takes (whole round trip, and the share the server itself spent), kept in memory only ----
+const PERF = { since: Date.now(), calls: [], screens: [] };
+const QUIET_ACTIONS = { pulse: 1, sync: 1, attachPhoto: 1, photoFailed: 1 };   // background calls: no progress bar for these
+let netInflight = 0, netTimer = null;
+function netBarSet() {
+  let el = $('netBar');
+  if (!el) { el = document.createElement('div'); el.id = 'netBar'; document.body.appendChild(el); }
+  el.classList.toggle('on', netInflight > 0);
+}
+function netStart(action) {
+  if (QUIET_ACTIONS[action]) return;
+  netInflight++;
+  clearTimeout(netTimer); netTimer = setTimeout(netBarSet, 300);   // only when something is actually slow
+}
+function netEnd(action) {
+  if (QUIET_ACTIONS[action]) return;
+  netInflight = Math.max(0, netInflight - 1);
+  if (!netInflight) { clearTimeout(netTimer); netBarSet(); }
+}
+function perfNote(action, t0, res, failed) {
+  PERF.calls.push({ action: action, ms: Math.round(performance.now() - t0), server: res && typeof res.ms === 'number' ? res.ms : null, lock: res && typeof res.lockMs === 'number' ? res.lockMs : null, failed: !!failed, at: Date.now() });
+  if (PERF.calls.length > 400) PERF.calls.shift();
+}
+function perfScreen(name, ms, cached) {
+  PERF.screens.push({ name: name, ms: Math.round(ms), cached: !!cached, at: Date.now() });
+  if (PERF.screens.length > 200) PERF.screens.shift();
+}
+function fmtSecs(ms) { return (ms / 1000).toFixed(1) + 's'; }
+/** The speed check as lines of text: per call type and per screen. */
+function perfReport() {
+  const by = {};
+  PERF.calls.forEach(function (c) {
+    const o = by[c.action] = by[c.action] || { n: 0, tot: 0, max: 0, srv: 0, srvN: 0, lock: 0, lockN: 0, fail: 0 };
+    o.n++; o.tot += c.ms; o.max = Math.max(o.max, c.ms); if (c.failed) o.fail++;
+    if (c.server !== null) { o.srv += c.server; o.srvN++; }
+    if (c.lock !== null) { o.lock += c.lock; o.lockN++; }
+  });
+  const mins = Math.max(1, (Date.now() - PERF.since) / 60000);
+  const lines = ['Speed check · ' + Math.round(mins) + ' min of use · ' + PERF.calls.length + ' calls (' + (PERF.calls.length / mins).toFixed(1) + ' per minute)', ''];
+  Object.keys(by).sort(function (a, b) { return by[b].tot - by[a].tot; }).forEach(function (k) {
+    const o = by[k];
+    lines.push(k + ' · ' + o.n + 'x · avg ' + fmtSecs(o.tot / o.n) + (o.srvN ? ' (server ' + fmtSecs(o.srv / o.srvN) + ')' : '') + ' · slowest ' + fmtSecs(o.max) +
+      (o.lockN ? ' · waited for turn ' + fmtSecs(o.lock / o.lockN) : '') + (o.fail ? ' · ' + o.fail + ' failed' : ''));
+  });
+  const sc = {};
+  PERF.screens.forEach(function (s) { const o = sc[s.name] = sc[s.name] || { n: 0, fresh: 0, freshN: 0, cachedN: 0 }; o.n++; if (s.cached) o.cachedN++; else { o.fresh += s.ms; o.freshN++; } });
+  if (Object.keys(sc).length) lines.push('', 'Screens (time until something is shown):');
+  Object.keys(sc).forEach(function (k) {
+    const o = sc[k];
+    lines.push(k + ' · ' + o.n + ' opens · ' + o.cachedN + ' shown at once from the last copy' + (o.freshN ? ' · others avg ' + fmtSecs(o.fresh / o.freshN) : ''));
+  });
+  return lines;
+}
+
+/**
+ * Sends what this phone measured since the last time to the server (a few rows, about every 15 minutes while the app is in use, and when the
+ * app is put away), so speed can be judged across everyone over days. Never blocks anything; if it fails the numbers are simply sent next time.
+ */
+let perfSentAt = 0;
+function perfDevice() {
+  const ua = navigator.userAgent || '';
+  const os = /Android ([\d.]+)/.test(ua) ? 'Android ' + RegExp.$1.split('.')[0] : /iPhone|iPad/.test(ua) ? 'iOS' : /Windows/.test(ua) ? 'Windows' : /Mac OS/.test(ua) ? 'Mac' : 'Other';
+  const br = /Edg\/(\d+)/.test(ua) ? 'Edge ' + RegExp.$1 : /Chrome\/(\d+)/.test(ua) ? 'Chrome ' + RegExp.$1 : /Version\/(\d+).*Safari/.test(ua) ? 'Safari ' + RegExp.$1 : 'Browser';
+  return os + ' · ' + br + (navigator.hardwareConcurrency ? ' · ' + navigator.hardwareConcurrency + ' cores' : '') + (navigator.deviceMemory ? ' · ' + navigator.deviceMemory + 'GB' : '');
+}
+function perfFlush(force) {
+  if (window.MOCK_BACKEND || !me || !(sessionToken || idToken)) return;
+  const since = perfSentAt, calls = PERF.calls.filter(function (c) { return c.at > since; }), screens = PERF.screens.filter(function (s) { return s.at > since; });
+  if (!force && calls.length < 5) return;
+  if (!calls.length && !screens.length) return;
+  const by = {};
+  calls.forEach(function (c) {
+    const o = by[c.action] = by[c.action] || { name: c.action, count: 0, tot: 0, maxMs: 0, srv: 0, srvN: 0, lock: 0, lockN: 0, failed: 0 };
+    o.count++; o.tot += c.ms; o.maxMs = Math.max(o.maxMs, c.ms); if (c.failed) o.failed++;
+    if (c.server !== null) { o.srv += c.server; o.srvN++; } if (c.lock !== null) { o.lock += c.lock; o.lockN++; }
+  });
+  const sc = {};
+  screens.forEach(function (s) { const o = sc[s.name] = sc[s.name] || { name: s.name, count: 0, tot: 0, fresh: 0, cached: 0 }; o.count++; if (s.cached) o.cached++; else { o.tot += s.ms; o.fresh++; } });
+  const conn = navigator.connection || {};
+  const body = JSON.stringify({
+    sessionToken: sessionToken || undefined, googleIdToken: sessionToken ? undefined : idToken, mode: 'perf', device: perfDevice(), network: conn.effectiveType || '',
+    minutes: Math.round((Date.now() - (since || PERF.since)) / 60000),
+    calls: Object.keys(by).map(function (k) { const o = by[k]; return { name: o.name, count: o.count, avgMs: o.tot / o.count, maxMs: o.maxMs, avgServerMs: o.srvN ? o.srv / o.srvN : null, avgLockMs: o.lockN ? o.lock / o.lockN : null, failed: o.failed }; }),
+    screens: Object.keys(sc).map(function (k) { const o = sc[k]; return { name: o.name, count: o.count, avgMs: o.fresh ? o.tot / o.fresh : 0, cached: o.cached }; })
+  });
+  perfSentAt = Date.now();
+  try { fetch(CONFIG.APPS_SCRIPT_URL, { method: 'POST', body: body, headers: { 'Content-Type': 'text/plain;charset=utf-8' }, keepalive: true }).catch(function () { perfSentAt = since; }); } catch (e) { perfSentAt = since; }
+}
+setInterval(function () { if (!document.hidden) perfFlush(false); }, 15 * 60000);
+document.addEventListener('visibilitychange', function () { if (document.hidden) perfFlush(false); });
+
 function rawCall(action, payload) {
+  const t0 = performance.now();
+  netStart(action);
+  return rawCall0_(action, payload).then(function (res) { netEnd(action); perfNote(action, t0, res, !(res && res.ok)); return res; },
+    function (e) { netEnd(action); perfNote(action, t0, null, true); throw e; }).then(handleResult);
+}
+function rawCall0_(action, payload) {
   if (window.MOCK_BACKEND) {
-    return Promise.resolve(window.MOCK_BACKEND(action, Object.assign({ asRole: activeRole }, payload || {}))).then(handleResult);
+    return Promise.resolve(window.MOCK_BACKEND(action, Object.assign({ asRole: activeRole }, payload || {})));
   }
   return new Promise(function (resolve, reject) {
     const cb = '__at_' + Date.now() + '_' + Math.random().toString(36).slice(2);
@@ -137,7 +234,7 @@ function rawCall(action, payload) {
     script.src = CONFIG.APPS_SCRIPT_URL + '?action=' + encodeURIComponent(action) + '&callback=' + encodeURIComponent(cb) +
       '&data=' + encodeURIComponent(JSON.stringify(data)) + '&_=' + Date.now();
     document.body.appendChild(script);
-  }).then(handleResult);
+  });
 }
 
 function handleResult(res) {
@@ -364,10 +461,19 @@ function openModal(html, onMount) {
 function closeModal() { $('modalHost').innerHTML = ''; }
 function modalOpen() { return !!$('modalHost').firstChild; }
 
+/** Runs a save from a button: the button says it is working (and cannot be pressed twice) until the answer is back. */
 function busy(btn, fn) {
   btn.disabled = true;
-  const old = btn.textContent;
-  return Promise.resolve().then(fn).catch(toastError).then(function () { btn.disabled = false; btn.textContent = old; });
+  const old = btn.innerHTML;
+  btn.classList.add('loading'); btn.textContent = 'Working…';
+  return Promise.resolve().then(fn).catch(toastError).then(function () { btn.disabled = false; btn.classList.remove('loading'); btn.innerHTML = old; });
+}
+/** A button that only opens another screen: show it was pressed while that screen loads (the screen replaces it when it appears). */
+function pending(btn) {
+  if (!btn || btn.tagName !== 'BUTTON' || !btn.classList.contains('btn') || btn.classList.contains('loading')) return;
+  const old = btn.innerHTML;
+  btn.classList.add('loading'); btn.textContent = 'Opening…';
+  setTimeout(function () { if (btn.isConnected) { btn.classList.remove('loading'); btn.innerHTML = old; } }, 6000);
 }
 
 function emptyState(text) { return '<div class="empty">' + esc(text) + '</div>'; }
@@ -2108,7 +2214,16 @@ VIEWS.help = function () {
   $('view').innerHTML = '<div class="card"><div class="row spread"><h2 style="margin:0">Help</h2><button class="linkBtn" id="helpBack">Back</button></div>' +
     '<div class="stickyHead"><input type="text" id="helpFilter" placeholder="Search help…" class="grow"></div>' +
     '<div id="helpList">' + secs.map(function (s, i) { return '<details class="helpSec" data-i="' + i + '"><summary>' + esc(s.title) + '</summary><div class="helpBody">' + s.html + '</div></details>'; }).join('') + '</div>' +
-    '<div id="helpNone" class="small muted hidden">Nothing matches. Try a different word, or contact your manager.</div>' + link + '</div>';
+    '<div id="helpNone" class="small muted hidden">Nothing matches. Try a different word, or contact your manager.</div>' + link +
+    '<details class="helpSec" id="speedSec"><summary>Speed check (for support)</summary><div class="helpBody"><p class="small muted">How long this phone waited for each kind of request since the app was opened. If the app feels slow, press Copy and send it to your manager.</p><pre id="speedOut" class="small" style="white-space:pre-wrap"></pre><div class="row"><button class="btn secondary small" id="speedCopy">Copy</button><button class="btn secondary small" id="speedReset">Start over</button></div></div></details></div>';
+  const speedPaint = function () { $('speedOut').textContent = perfReport().join('\n'); };
+  $('speedSec').addEventListener('toggle', speedPaint);
+  $('speedReset').addEventListener('click', function () { PERF.since = Date.now(); PERF.calls = []; PERF.screens = []; speedPaint(); });
+  $('speedCopy').addEventListener('click', function () {
+    const t = perfReport().join('\n');
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(function () { toast('Copied'); }, function () { toast('Could not copy. Select the text and copy it.', true); });
+    else toast('Select the text and copy it.', true);
+  });
   $('helpBack').addEventListener('click', function () { go(helpFrom && helpFrom !== 'help' ? helpFrom : startTab()); });
   $('helpFilter').addEventListener('input', function () {
     const q = $('helpFilter').value.trim().toLowerCase();
@@ -2244,12 +2359,12 @@ document.addEventListener('click', function (e) {
   if (t.id === 'helpBtn') return go('help');
   if (t.id === 'signOutBtn') return signOut();
   if (d.tab) return go(d.tab);
-  if (d.go) return go(d.go);
-  if (d.act === 'send') return go('newTransfer');
-  if (d.act === 'checkin') return go('checkin');
-  if (d.act === 'issue') return go('issue');
+  if (d.go) { pending(t); return go(d.go); }
+  if (d.act === 'send') { pending(t); return go('newTransfer'); }
+  if (d.act === 'checkin') { pending(t); return go('checkin'); }
+  if (d.act === 'issue') { pending(t); return go('issue'); }
   if (d.receive) return openReceive(d.receive);
-  if (d.cancel) { if (confirm('Cancel this transfer? The assets return to the sender.')) callBackend('cancelTransfer', { transferId: d.cancel }).then(function () { toast('Cancelled'); go('transfers', true); }).catch(toastError); return; }
+  if (d.cancel) { if (confirm('Cancel this transfer? The assets return to the sender.')) busy(t, function () { return callBackend('cancelTransfer', { transferId: d.cancel }).then(function () { toast('Cancelled'); go('transfers', true); }); }); return; }
   if (d.photo) return viewPhoto(d.photo);
   if (d.prop) return go('property', false, d.prop);
   if (d.issueFor) return go('issue', false, [d.issueFor]);
