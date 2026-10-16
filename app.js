@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Asset Tracker - frontend. Vanilla JS, no build step (GitHub Pages friendly).
  * Talks to Code.gs over JSONP (see apps-script/Code.gs for why). Photo upload is
  * the one POST (hidden form + postMessage).
@@ -1947,6 +1947,7 @@ function renderFlags(all) {
 let manageOpen = {};   // which sections are open, kept across redraws
 let teamFilter = '', stayFilter = '', teamMode = 'active';
 // Edits saved to the source spreadsheet show here at once, until the app's own copy of the list (which re-imports a little later) catches up.
+let stayAdded = [];        // check-ins added from this screen, shown until the app's copy has them
 const stayOverlay = {};   // identity of the row as it was in the copy -> { fields, at }
 
 function stayIdentity(r) { return [r.property, r.start, r.end, r.locationId, r.supervisor, r.supervisorEmail].join('~'); }
@@ -1990,11 +1991,47 @@ function manageOpenStay(m, r) {
   });
 }
 
+
+/** A new check-in for the source property list. The Location ID is not asked for: it is set in Properties and their supervisor. */
+function manageOpenAddStay(m) {
+  const L = m.propertyLinks, today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
+  const fld = function (k) { return L.fields.find(function (f) { return f.key === k; }); };
+  const text = function (k, extra) { const f = fld(k); return '<label class="f">' + esc(f.label) + (f.required ? '' : ' <span class="muted">(optional)</span>') + '</label><input type="text" id="sa_' + k + '"' + (f.type === 'phone' ? ' inputmode="tel"' : '') + (extra || '') + '>'; };
+  openModal('<div class="row spread"><h2>Add a check-in</h2><button class="linkBtn" data-close>Close</button></div>' +
+    '<div class="banner warn"><div class="grow small"><b>This adds a new row to the source spreadsheet</b> (' + esc(L.source) + '), below the last check-in. Cells the sheet calculates (such as the Location ID) are left to the sheet.</div></div>' +
+    text('property') +
+    '<label class="f">Check-in date</label><input type="date" id="sa_start" min="' + today + '">' +
+    '<label class="f">Check-out date <span class="muted">(optional)</span></label><input type="date" id="sa_end" min="' + today + '">' +
+    text('address') + text('link', ' placeholder="https://"') + text('hostName') + text('hostPhone') + text('caretakerName') + text('caretakerPhone') +
+    '<div class="row" style="margin-top:14px"><button class="btn" id="saSave">Add to the source</button><button class="btn secondary" data-close>Cancel</button></div><div class="small" id="saMsg" style="margin-top:8px"></div>', function (box) {
+    const msg = function (t, bad) { const e = box.querySelector('#saMsg'); e.textContent = t; e.style.color = bad ? 'var(--bad)' : ''; };
+    box.querySelector('#saSave').addEventListener('click', function (e) {
+      const val = function (id) { return box.querySelector('#' + id).value.trim(); };
+      const values = { start: val('sa_start'), end: val('sa_end') };
+      L.fields.forEach(function (f) { values[f.key] = val('sa_' + f.key); });
+      if (!values.property) return msg('Enter the property name.', true);
+      if (!values.start) return msg('Choose the check-in date.', true);
+      busy(e.target, function () {
+        return callBackend('managerAddStay', { values: values }).then(function (res) {
+          stayAdded.push({ property: values.property, address: values.address, link: values.link, start: values.start, end: values.end, locationId: '', supervisor: '', supervisorEmail: '',
+            hostName: values.hostName, hostPhone: values.hostPhone, caretakerName: values.caretakerName, caretakerPhone: values.caretakerPhone, _pending: true, _added: true, _at: Date.now() });
+          manageOpen.links = true; closeModal(); toast('Added to the source'); (res.notes || []).forEach(function (n) { setTimeout(function () { toast(n); }, 700); });
+          go('manage', true);
+        }).catch(function (err) { msg(err.message, true); });
+      });
+    });
+  });
+}
+
 function manageStayList(m) {
   const L = m.propertyLinks, q = stayFilter.toLowerCase();
-  const rows = L.rows.map(stayEffective).filter(function (r) { return !q || [r.property, r.address, r.locationId, r.supervisor, r.hostName, r.caretakerName, r.start].join(' ').toLowerCase().indexOf(q) !== -1; });
+  // check-ins just added: shown at once, until the app's own copy of the list has caught up with them
+  const have = function (r) { return L.rows.some(function (x) { return x.property.toLowerCase() === r.property.toLowerCase() && x.start === r.start; }); };
+  stayAdded = stayAdded.filter(function (r) { return Date.now() - r._at < 15 * 60000 && !have(r); });
+  const rows = L.rows.concat(stayAdded).sort(function (x, y) { return x.start < y.start ? -1 : x.start > y.start ? 1 : (x.property < y.property ? -1 : 1); }).map(stayEffective).filter(function (r) { return !q || [r.property, r.address, r.locationId, r.supervisor, r.hostName, r.caretakerName, r.start].join(' ').toLowerCase().indexOf(q) !== -1; });
   let last = '';
   return '<div class="banner ' + (L.enabled ? '' : 'warn') + '" style="margin-bottom:8px"><div class="grow small">' + (L.enabled ? '<b>Source:</b> ' + esc(L.source) + '. ' : '') + esc(L.note) + ' Showing check-ins from ' + esc(L.from) + ' onward. Earlier ones are never shown or edited.</div></div>' +
+    (L.enabled ? '<div class="row" style="margin-bottom:8px"><button class="btn small" id="stayAdd">Add a check-in</button></div>' : '') +
     '<input type="text" id="staySearch" placeholder="Find a property, supervisor, date…" value="' + esc(stayFilter) + '">' +
     '<div class="small muted" style="margin:6px 0">' + rows.length + ' of ' + L.rows.length + ' row(s)' + (rows.length > 60 ? ' (showing 60: search to narrow)' : '') + '</div>' +
     rows.slice(0, 60).map(function (r, i) {
@@ -2003,7 +2040,7 @@ function manageStayList(m) {
         '<div class="small">' + (r.link ? '<a href="' + esc(r.link) + '" target="_blank" rel="noopener">Open link</a>' : '<span class="muted">No link</span>') + '</div>' +
         '<div class="small muted">Host: ' + esc(r.hostName || '-') + ' ' + esc(r.hostPhone) + ' · Caretaker: ' + esc(r.caretakerName || '-') + ' ' + esc(r.caretakerPhone) + '</div>' +
         '<div class="small muted">' + esc(r.locationId) + ' · ' + esc(r.supervisor || r.supervisorEmail || 'no supervisor') + '</div></div>' +
-        (L.enabled ? '<button class="btn secondary small" data-stay="' + esc(stayIdentity(r._orig || r)) + '">Edit</button>' : '') + '</div>';
+        (L.enabled && !r._added ? '<button class="btn secondary small" data-stay="' + esc(stayIdentity(r._orig || r)) + '">Edit</button>' : '') + '</div>';
     }).join('');
 }
 
@@ -2024,7 +2061,7 @@ function manageForm(m, tbl, row) {
   const locked = row ? row.locked : [];
   let html = '<div class="row spread"><h2>' + (editing ? 'Edit' : 'Add') + ' · ' + esc(tbl.title) + '</h2><button class="linkBtn" data-close>Close</button></div>';
   tbl.columns.forEach(function (c) {
-    if (c.type === 'auto' && !editing) return;
+    if ((c.type === 'auto' || c.noAdd) && !editing) return;
     const val = v[c.n] === undefined ? '' : v[c.n];
     const isKey = tbl.keyCols.indexOf(c.n) !== -1;
     const fixed = c.type === 'readonly' && !(tbl.table === 'Config' && c.n === 'Value') || c.type === 'auto';
@@ -2178,6 +2215,7 @@ VIEWS.manage = function () {
       $('optList').querySelectorAll('[data-medit]').forEach(function (b) { b.addEventListener('click', function () { manageOpenForm(m, T.Options, T.Options.rows.find(function (r) { return r.key === b.dataset.key; })); }); });
     });
     const wireStays = function () {
+      const sa = $('stayAdd'); if (sa) sa.addEventListener('click', function () { manageOpenAddStay(m); });
       view.querySelectorAll('[data-stay]').forEach(function (b) {
         b.addEventListener('click', function () { const r = m.propertyLinks.rows.map(stayEffective).find(function (x) { return stayIdentity(x._orig || x) === b.dataset.stay; }); if (r) manageOpenStay(m, r); });
       });
