@@ -1963,6 +1963,10 @@ function manageStayForm(m, r) {
   let html = '<div class="row spread"><h2>Edit property details</h2><button class="linkBtn" data-close>Close</button></div>' +
     '<div class="banner warn"><div class="grow small"><b>This changes the source spreadsheet</b> (' + esc(L.source) + '), not the app\'s copy. Only this one row, and only check-ins from today onward, can be edited.</div></div>' +
     '<div class="small" style="margin:8px 0"><b>' + esc(r.start) + '</b> · ' + esc(r.locationId) + ' · supervisor ' + esc(r.supervisor || r.supervisorEmail || 'none') + (r.end ? ' · check-out ' + esc(r.end) : '') + '</div>';
+  // the supervisor: "(current)" keeps what the sheet has now (even if it is only a name); the others are the active supervisors
+  const cur = (r.supervisorEmail || '').toLowerCase();
+  html += '<label class="f">Supervisor</label><select id="sf_sup"><option value="' + esc(cur) + '">' + esc(r.supervisor || r.supervisorEmail || '(none)') + ' (current)</option>' +
+    m.choices.supervisors.filter(function (s) { return s.email !== cur; }).map(function (s) { return '<option value="' + esc(s.email) + '">' + esc(s.name) + '</option>'; }).join('') + '</select>';
   L.fields.forEach(function (f) {
     html += '<label class="f">' + esc(f.label) + (f.required ? '' : ' <span class="muted">(optional)</span>') + '</label><input type="text" id="sf_' + f.key + '" value="' + esc(r[f.key]) + '"' + (f.type === 'phone' ? ' inputmode="tel"' : '') + '>';
   });
@@ -1975,12 +1979,15 @@ function manageOpenStay(m, r) {
     box.querySelector('#sfSave').addEventListener('click', function (e) {
       const changes = {}, expected = {};
       m.propertyLinks.fields.forEach(function (f) { const v = box.querySelector('#sf_' + f.key).value; if (v.trim() !== String(r[f.key] || '').trim()) { changes[f.key] = v; expected[f.key] = r[f.key]; } });
+      const supSel = box.querySelector('#sf_sup'), newSup = m.choices.supervisors.find(function (s) { return s.email === supSel.value; });
+      if (supSel.value !== (r.supervisorEmail || '').toLowerCase() && newSup) { changes.supervisorEmail = supSel.value; expected.supervisorEmail = r.supervisorEmail || ''; }
       if (!Object.keys(changes).length) { closeModal(); return; }
       const match = { property: r.property, start: r.start, end: r.end, locationId: r.locationId, supervisor: r.supervisor, supervisorEmail: r.supervisorEmail };
       busy(e.target, function () {
         return callBackend('managerSaveStay', { match: match, changes: changes, expected: expected }).then(function (res) {
           const orig = r._orig || r, fields = {};
           Object.keys(changes).forEach(function (k) { fields[k] = changes[k].trim(); });
+          if (changes.supervisorEmail) { fields.supervisorEmail = changes.supervisorEmail.toLowerCase(); fields.supervisor = newSup.name; }
           const prev = stayOverlay[stayIdentity(orig)];
           stayOverlay[stayIdentity(orig)] = { fields: Object.assign({}, prev ? prev.fields : {}, fields), at: Date.now() };
           closeModal(); toast(res.changed ? 'Saved to the source' : 'Nothing changed'); (res.notes || []).forEach(function (n) { setTimeout(function () { toast(n); }, 700); });
@@ -2002,18 +2009,21 @@ function manageOpenAddStay(m) {
     text('property') +
     '<label class="f">Check-in date</label><input type="date" id="sa_start" min="' + today + '">' +
     '<label class="f">Check-out date <span class="muted">(optional)</span></label><input type="date" id="sa_end" min="' + today + '">' +
+    '<label class="f">Supervisor</label><select id="sa_sup"><option value="">(choose)</option>' + m.choices.supervisors.map(function (s) { return '<option value="' + esc(s.email) + '">' + esc(s.name) + '</option>'; }).join('') + '</select>' +
     text('address') + text('link', ' placeholder="https://"') + text('hostName') + text('hostPhone') + text('caretakerName') + text('caretakerPhone') +
     '<div class="row" style="margin-top:14px"><button class="btn" id="saSave">Add to the source</button><button class="btn secondary" data-close>Cancel</button></div><div class="small" id="saMsg" style="margin-top:8px"></div>', function (box) {
     const msg = function (t, bad) { const e = box.querySelector('#saMsg'); e.textContent = t; e.style.color = bad ? 'var(--bad)' : ''; };
     box.querySelector('#saSave').addEventListener('click', function (e) {
       const val = function (id) { return box.querySelector('#' + id).value.trim(); };
-      const values = { start: val('sa_start'), end: val('sa_end') };
+      const values = { start: val('sa_start'), end: val('sa_end'), supervisorEmail: box.querySelector('#sa_sup').value };
       L.fields.forEach(function (f) { values[f.key] = val('sa_' + f.key); });
       if (!values.property) return msg('Enter the property name.', true);
       if (!values.start) return msg('Choose the check-in date.', true);
+      if (!values.supervisorEmail) return msg('Choose the supervisor.', true);
       busy(e.target, function () {
         return callBackend('managerAddStay', { values: values }).then(function (res) {
-          stayAdded.push({ property: values.property, address: values.address, link: values.link, start: values.start, end: values.end, locationId: '', supervisor: '', supervisorEmail: '',
+          const sup = m.choices.supervisors.find(function (s) { return s.email === values.supervisorEmail; }) || {};
+          stayAdded.push({ property: values.property, address: values.address, link: values.link, start: values.start, end: values.end, locationId: '', supervisor: sup.name || '', supervisorEmail: String(values.supervisorEmail).toLowerCase(),
             hostName: values.hostName, hostPhone: values.hostPhone, caretakerName: values.caretakerName, caretakerPhone: values.caretakerPhone, _pending: true, _added: true, _at: Date.now() });
           manageOpen.links = true; closeModal(); toast('Added to the source'); (res.notes || []).forEach(function (n) { setTimeout(function () { toast(n); }, 700); });
           go('manage', true);
