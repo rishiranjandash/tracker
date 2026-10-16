@@ -2263,6 +2263,7 @@ VIEWS.help = function () {
     '<div class="stickyHead"><input type="text" id="helpFilter" placeholder="Search help…" class="grow"></div>' +
     '<div id="helpList">' + secs.map(function (s, i) { return '<details class="helpSec" data-i="' + i + '"><summary>' + esc(s.title) + '</summary><div class="helpBody">' + s.html + '</div></details>'; }).join('') + '</div>' +
     '<div id="helpNone" class="small muted hidden">Nothing matches. Try a different word, or contact your manager.</div>' + link +
+    '<p class="small muted">App version: ' + esc((function () { const m = document.querySelector('meta[name="app-build"]'); const v = m ? m.content : ''; return !v || v === '__BUILD__' ? 'local copy' : v; })()) + '</p>' +
     '<details class="helpSec" id="speedSec"><summary>Speed check (for support)</summary><div class="helpBody"><p class="small muted">How long this phone waited for each kind of request since the app was opened. If the app feels slow, press Copy and send it to your manager.</p><pre id="speedOut" class="small" style="white-space:pre-wrap"></pre><div class="row"><button class="btn secondary small" id="speedCopy">Copy</button><button class="btn secondary small" id="speedReset">Start over</button></div></div></details></div>';
   const speedPaint = function () { $('speedOut').textContent = perfReport().join('\n'); };
   $('speedSec').addEventListener('toggle', speedPaint);
