@@ -25,7 +25,8 @@ const HELP = {
     { title: 'Send assets and confirm receipt', html:
       '<ol><li>Open <b>Transfers</b> and choose where to send: the Office or another supervisor.</li><li>Tick the assets and send.</li></ol>' +
       '<p>A photo is optional and never slows you down: the send goes through at once and the photo uploads in the background while you carry on. A note at the bottom shows it is still uploading; if it fails, tap the note to try again.</p>' +
-      '<p>The receiver ticks only what actually arrived. Anything not ticked is flagged as a short receipt for an admin to settle. You can cancel a transfer that is still in transit. You cannot confirm a transfer you sent yourself.</p>' },
+      '<p>The receiver ticks only what actually arrived. Anything not ticked is flagged as a short receipt for an admin to settle. You can cancel a transfer that is still in transit. You cannot confirm a transfer you sent yourself.</p>' +
+      '<p>At the bottom, <b>Transfer history</b> lists the last 6 closed transfers. Pick From and To dates to look further back; tap <b>Latest 6</b> to go back.</p>' },
     { title: 'Report an issue', html:
       '<p>Open <b>Report issue</b>, select one or many assets, choose the issue type for each, add a photo if it helps, and submit. Faulty devices stop counting as working and cannot be assigned until an admin resolves the issue.</p>' },
     { title: 'Asset check-in', html:
@@ -40,7 +41,9 @@ const HELP = {
     { title: 'Schedule', html:
       '<p>Shows every supervisor\'s current and next property and whether their last location or scan matches it. Tap <b>Why</b> to see exactly what the status was worked out from. Below is the full movement history with a filter by supervisor, and any schedule rows not linked to a supervisor. Ask your manager to correct those rows.</p>' },
     { title: 'Transfers', html:
-      '<p>Dispatch assets and confirm receipt of anything sent to the Office. The sender cannot confirm their own transfer. Tick only what arrived; the rest is flagged as short.</p>' },
+      '<p>Dispatch assets and confirm receipt of anything sent to the Office. The sender cannot confirm their own transfer. Tick only what arrived; the rest is flagged as short.</p>' +
+      '<p>At the bottom, <b>Transfer history</b> lists the last 6 closed transfers; pick From and To dates to look further back.</p>' +
+      '<p><b>In the Office:</b> what a supervisor sent you appears here after you confirm receipt. For SD cards press <b>Upload process started</b>, then <b>Upload process completed</b>, then <b>Send back</b> (to the same supervisor, or choose another). Tick only the cards that are at the same step; the others stay where they are. <b>Keep in Office</b> takes the ticked items out of the list and they stay in your custody. <b>Step back</b> undoes the last step. Devices have no upload: send them back or keep them.</p>' },
     { title: 'Needs attention', html:
       '<p>Everything the app has flagged. Select several to dismiss, assign a holder, settle a short receipt or acknowledge. A "Not at scheduled property" alert appears at 14:00 for a supervisor who is not at a property starting today, and clears by itself when they arrive.</p>' },
     { title: 'Issues', html:
