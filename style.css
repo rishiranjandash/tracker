@@ -201,3 +201,6 @@ button.btn.loading::before { content: ''; display: inline-block; width: .85em; h
 #netBar.on { display: block; }
 #netBar::after { content: ''; position: absolute; top: 0; bottom: 0; left: -35%; width: 35%; background: var(--brand); animation: atbar 1s ease-in-out infinite; }
 @keyframes atbar { from { left: -35%; } to { left: 100%; } }
+
+/* the invoice outbox note sits above the photo note */
+.photoStatus.inv { bottom: 112px; }
