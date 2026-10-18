@@ -22,6 +22,9 @@ const HELP = {
       '<p>The Assign screen shows one card per person: your team, plus anyone who scanned in at your property today. Each card has a Device slot and SD card slots.</p>' +
       '<ol><li>Pick the asset from the list in each slot.</li><li>Tap <b>Save changes</b>.</li></ol>' +
       '<p><b>Take all off</b> clears one person. <b>Still with same people</b> confirms nothing has changed (the app asks every 4 hours between 07:00 and 21:00). People who are not registered in the Awign app show "Not registered in the Awign app yet"; you can still assign to them.</p>' },
+    { title: 'Invoices', html:
+      '<p>Open <b>Invoices</b> and press <b>New invoice</b>: choose the category, enter the amount, the parcel brand and the date of the movement, then add 1-3 pictures of the invoice. You can also link it to one of your transfers.</p>' +
+      '<p>Pressing <b>Submit invoice</b> saves it on your phone first, so it still goes through if the signal drops or you close the app. The <b>Waiting to send</b> list shows anything that has not reached the server yet; it is sent again by itself, or press <b>Send now</b>. If an admin has asked for an invoice, it appears under <b>Asked for by an admin</b>: press <b>Send this invoice</b>. An invoice that is sent back shows the reason; send a better one.</p>' },
     { title: 'Send assets and confirm receipt', html:
       '<ol><li>Open <b>Transfers</b> and choose where to send: the Office or another supervisor.</li><li>Tick the assets and send.</li></ol>' +
       '<p>A photo is optional and never slows you down: the send goes through at once and the photo uploads in the background while you carry on. A note at the bottom shows it is still uploading; if it fails, tap the note to try again.</p>' +
@@ -40,6 +43,9 @@ const HELP = {
       '<p>Totals by property and status. Tap a property for its detail: workforce, devices, SD cards, issues and flags. The tiles at the top lead to Transfers, Needs attention and Issues. The <b>Office stock</b> tile opens the list of everything held in the Office, whichever admin holds it; tick several to report an issue or send them.</p>' },
     { title: 'Schedule', html:
       '<p>Shows every supervisor\'s current and next property and whether their last location or scan matches it. Tap <b>Why</b> to see exactly what the status was worked out from. Below is the full movement history with a filter by supervisor, and any schedule rows not linked to a supervisor. Ask your manager to correct those rows.</p>' },
+    { title: 'Invoices', html:
+      '<p><b>Invoices</b> lists what supervisors have sent, with the pictures. Filter by status, category, brand, supervisor or date; <b>Download CSV</b> gives the list for accounts. <b>Approve</b> an invoice, or <b>Send back</b> with a reason (the supervisor is asked to send a better one).</p>' +
+      '<p><b>Request invoices</b> asks the supervisor on any past or present transfer for its invoice; set a note and a due date. A request that is late shows in Needs attention. The category and parcel brand lists are edited in Manage > Options (INVOICE_CATEGORY, PARCEL_BRAND).</p>' },
     { title: 'Transfers', html:
       '<p>Dispatch assets and confirm receipt of anything sent to the Office. The sender cannot confirm their own transfer. Tick only what arrived; the rest is flagged as short.</p>' +
       '<p>At the bottom, <b>Transfer history</b> lists the last 6 closed transfers; pick From and To dates to look further back.</p>' +
