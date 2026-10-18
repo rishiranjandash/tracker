@@ -14,6 +14,8 @@ let OPTS = {
   ui: { pollSeconds: 45, pickerMax: 50, officeName: 'Office', confirmEveryHours: 4, recentHours: 24, assignBy: '10:00' }
 };
 
+let activeOffice = ''; // a head admin may look at one office only (remembered on this device); everyone else always gets their own
+try { activeOffice = localStorage.getItem('at_office') || ''; } catch (e) { /* storage blocked */ }
 let activeRole = ''; // which of their roles this person is acting as (remembered on this device)
 try { activeRole = localStorage.getItem('at_role') || ''; } catch (e) { /* storage blocked: default role is used */ }
 let sessionToken = ''; // issued by the server after one Google sign-in; lets this device skip the sign-in for days
@@ -71,7 +73,7 @@ function catPrefix(c) { return c === 'DEVICE' ? '' : catLabel(c) + ' '; }
 // ===================== TRANSPORT =====================
 
 // Actions that only read. Everything else is a save, which wipes the screen memo below.
-const READS = { officeStock: 1, checkinList: 1, managerOverview: 1, saveLocation: 1, stays: 1, home: 1, picker: 1, search: 1, issues: 1, flags: 1, notifications: 1, supervisors: 1, properties: 1, supervisorList: 1, team: 1, assignments: 1, report: 1, options: 1, transfers: 1, transferHistory: 1, officeBatches: 1, pulse: 1, photoGet: 1, sync: 1 };
+const READS = { officeStock: 1, checkinList: 1, managerOverview: 1, saveLocation: 1, stays: 1, home: 1, picker: 1, search: 1, issues: 1, flags: 1, notifications: 1, supervisors: 1, properties: 1, supervisorList: 1, team: 1, assignments: 1, report: 1, options: 1, transfers: 1, transferHistory: 1, officeBatches: 1, invoices: 1, pulse: 1, photoGet: 1, sync: 1 };
 const NO_MEMO = { saveLocation: 1, search: 1, report: 1, photoGet: 1, pulse: 1, sync: 1, notifications: 1 };
 let memo = {};          // last answer for each read, so a screen can be drawn instantly while a fresh answer loads
 let memoEpoch = 0;      // bumped by every save, so an answer that was in flight during a save is not remembered
@@ -221,7 +223,7 @@ function rawCall(action, payload) {
 }
 function rawCall0_(action, payload) {
   if (window.MOCK_BACKEND) {
-    return Promise.resolve(window.MOCK_BACKEND(action, Object.assign({ asRole: activeRole }, payload || {})));
+    return Promise.resolve(window.MOCK_BACKEND(action, Object.assign({ asRole: activeRole, officeId: activeOffice || undefined }, payload || {})));
   }
   return new Promise(function (resolve, reject) {
     const cb = '__at_' + Date.now() + '_' + Math.random().toString(36).slice(2);
@@ -230,7 +232,7 @@ function rawCall0_(action, payload) {
     function cleanup() { try { delete window[cb]; } catch (e) { window[cb] = undefined; } if (script.parentNode) script.parentNode.removeChild(script); }
     window[cb] = function (res) { if (done) return; done = true; cleanup(); resolve(res); };
     script.onerror = function () { if (done) return; done = true; cleanup(); reject(new Error('Could not reach the server. Check your connection.')); };
-    const data = Object.assign({ sessionToken: sessionToken || undefined, googleIdToken: sessionToken ? undefined : idToken, asRole: activeRole }, payload || {});
+    const data = Object.assign({ sessionToken: sessionToken || undefined, googleIdToken: sessionToken ? undefined : idToken, asRole: activeRole, officeId: activeOffice || undefined }, payload || {});
     script.src = CONFIG.APPS_SCRIPT_URL + '?action=' + encodeURIComponent(action) + '&callback=' + encodeURIComponent(cb) +
       '&data=' + encodeURIComponent(JSON.stringify(data)) + '&_=' + Date.now();
     document.body.appendChild(script);
@@ -278,7 +280,8 @@ function blobToBase64(b) {
   });
 }
 /** File -> { b64, bytes, w, h }: a small JPEG, upright, on a white background. */
-function compressPhoto(file) {
+function compressPhoto(file, cfg) {
+  const targets = (cfg && cfg.targets) || PHOTO_TARGETS, maxBytes = (cfg && cfg.maxBytes) || PHOTO_TARGET_BYTES;
   return loadImageSource(file).then(function (src) {
     const sw = src.width, sh = src.height;
     const render = function (edge, quality) {
@@ -290,8 +293,8 @@ function compressPhoto(file) {
     };
     let n = 0;
     const next = function () {
-      const t = PHOTO_TARGETS[n++];
-      return render(t[0], t[1]).then(function (r) { return (r.blob.size <= PHOTO_TARGET_BYTES || n >= PHOTO_TARGETS.length) ? r : next(); });
+      const t = targets[n++];
+      return render(t[0], t[1]).then(function (r) { return (r.blob.size <= maxBytes || n >= targets.length) ? r : next(); });
     };
     return next().then(function (r) {
       if (src.close) src.close();
@@ -301,56 +304,7 @@ function compressPhoto(file) {
 }
 
 /** Uploads an already shrunk photo (base64 JPEG) and resolves with its file id. */
-function uploadB64(kind, refLabel, b64) {
-  // First choice: send it as plain text and read the answer directly (no hidden page, nothing to be blocked). Only if that cannot be done at all
-  // (network or browser refusal, not an answer from the server) the older hidden-form route is tried.
-  return uploadFetch_(kind, refLabel, b64).catch(function (e) {
-    if (e && e.fromServer) throw e;
-    return uploadViaForm_(kind, refLabel, b64);
-  });
-}
-function uploadFetch_(kind, refLabel, b64) {
-  const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
-  const timer = setTimeout(function () { if (ctl) ctl.abort(); }, 60000);
-  const body = JSON.stringify({ sessionToken: sessionToken || undefined, googleIdToken: sessionToken ? undefined : idToken, kind: kind, refLabel: refLabel, mime: 'image/jpeg', base64: b64, requestId: 'f' + Date.now() });
-  return fetch(CONFIG.APPS_SCRIPT_URL, { method: 'POST', body: body, headers: { 'Content-Type': 'text/plain;charset=utf-8' }, redirect: 'follow', signal: ctl ? ctl.signal : undefined })
-    .then(function (r) { return r.text(); })
-    .then(function (t) {
-      let j; try { j = JSON.parse(t); } catch (e) { throw new Error('Unreadable answer from the server.'); }
-      if (j && j.ok) return j.data.fileId;
-      const err = new Error((j && j.error) || 'Photo upload failed.'); err.fromServer = true; throw err;
-    }).then(function (v) { clearTimeout(timer); return v; }, function (e) { clearTimeout(timer); throw e; });
-}
-function uploadViaForm_(kind, refLabel, b64) {
-  const p = { b64: b64 };
-  {
-    return new Promise(function (resolve, reject) {
-      const reqId = 'u' + Date.now() + Math.random().toString(36).slice(2);
-      const iframe = document.createElement('iframe');
-      iframe.name = 'up_' + reqId; iframe.style.display = 'none';
-      const form = document.createElement('form');
-      form.method = 'POST'; form.action = CONFIG.APPS_SCRIPT_URL; form.target = iframe.name; form.style.display = 'none';
-      const inp = document.createElement('input');
-      inp.type = 'hidden'; inp.name = 'payload';
-      // the session token is what a signed-in device holds; the Google token alone is missing or too old on most devices
-      inp.value = JSON.stringify({ sessionToken: sessionToken || undefined, googleIdToken: sessionToken ? undefined : idToken, kind: kind, refLabel: refLabel, mime: 'image/jpeg', base64: p.b64, requestId: reqId });
-      form.appendChild(inp);
-      let timer, badOrigin = '';
-      function finish() { clearTimeout(timer); window.removeEventListener('message', onMsg); iframe.remove(); form.remove(); }
-      function onMsg(e) {
-        const m = e.data && e.data.assetTrackerUpload;
-        if (!m || m.requestId !== reqId) return;
-        let host = ''; try { host = new URL(e.origin).hostname; } catch (x) { host = String(e.origin); }
-        if (!/googleusercontent\.com$/.test(host)) { badOrigin = host; return; }   // remembered so a failure can say where the answer came from
-        finish();
-        if (m.result && m.result.ok) resolve(m.result.data.fileId); else reject(new Error((m.result && m.result.error) || 'Photo upload failed.'));
-      }
-      window.addEventListener('message', onMsg);
-      timer = setTimeout(function () { finish(); reject(new Error('The photo upload is taking too long.' + (badOrigin ? ' (answer came from ' + badOrigin + ')' : ''))); }, 90000);
-      document.body.appendChild(iframe); document.body.appendChild(form); form.submit();
-    });
-  }
-}
+function uploadB64(kind, refLabel, b64) { return uploadChunked(kind, refLabel, b64); }
 
 /**
  * Photos never hold up a send or a report. The send / report is saved first (marked "photo pending" on the server); this queue then shrinks
@@ -630,7 +584,8 @@ function startSession(withSync) {
     activeRole = h.role; // the server may have fallen back from a stale remembered role
     // Only remember the choice for people who actually have a choice, so a single-role user on a shared device does not overwrite it.
     if (h.roles.length > 1) { try { localStorage.setItem('at_role', activeRole); } catch (e) { /* ignore */ } }
-    $('userLabel').textContent = h.name + (h.roles.length > 1 ? '' : ' · ' + h.role.toLowerCase());
+    $('userLabel').textContent = h.name + (h.roles.length > 1 ? '' : ' · ' + h.role.toLowerCase()) + (h.officeInfo && h.officeInfo.multi && h.officeInfo.label ? ' · ' + h.officeInfo.label : '');
+    setupOfficeSwitch(h);
     const rs = $('roleSwitch');
     if (h.roles.length > 1) {
       rs.innerHTML = h.roles.map(function (x) { return '<option value="' + esc(x) + '"' + (x === h.role ? ' selected' : '') + '>Acting as: ' + esc(x.charAt(0) + x.slice(1).toLowerCase()) + '</option>'; }).join('');
@@ -642,7 +597,7 @@ function startSession(withSync) {
     pollTimer = setInterval(poll, (OPTS.ui.pollSeconds || CONFIG.POLL_SECONDS || 45) * 1000);
     updateBadge();
     if (withSync) setTimeout(backgroundSync, 300);
-    setTimeout(function () { photoQueue.resume(); }, 1500);   // finish any photo that was still uploading when the app was last closed
+    setTimeout(function () { photoQueue.resume(); if (typeof invoiceOutboxStart === 'function') invoiceOutboxStart(); }, 1500);   // finish any photo that was still uploading when the app was last closed
     setTimeout(prefetch, 900);
     setTimeout(recordLocation, 1500);
   }).catch(function (e) {
@@ -741,12 +696,12 @@ document.addEventListener('visibilitychange', function () { if (!document.hidden
 // ===================== NAV =====================
 
 const TABS = {
-  SUPERVISOR: [['home', 'Home'], ['team', 'Assign'], ['transfers', 'Transfers'], ['issue', 'Report issue'], ['search', 'Search']],
-  ADMIN: [['dash', 'Dashboard'], ['schedule', 'Schedule'], ['transfers', 'Transfers'], ['flags', 'Needs attention'], ['issues', 'Issues'], ['assets', 'Assets'], ['sups', 'Supervisors'], ['search', 'Search'], ['reports', 'Reports']],
+  SUPERVISOR: [['home', 'Home'], ['team', 'Assign'], ['transfers', 'Transfers'], ['invoices', 'Invoices'], ['issue', 'Report issue'], ['search', 'Search']],
+  ADMIN: [['dash', 'Dashboard'], ['schedule', 'Schedule'], ['transfers', 'Transfers'], ['invoices', 'Invoices'], ['flags', 'Needs attention'], ['issues', 'Issues'], ['assets', 'Assets'], ['sups', 'Supervisors'], ['search', 'Search'], ['reports', 'Reports']],
   OPS: [['dash', 'Dashboard'], ['schedule', 'Schedule'], ['flags', 'Needs attention'], ['issues', 'Issues'], ['search', 'Search'], ['reports', 'Reports']],
   MANAGER: [['manage', 'Manage']]
 };
-const PARENT_TAB = { office: 'dash', newTransfer: 'transfers', checkin: 'home', alerts: null, help: null, property: 'dash' };
+const PARENT_TAB = { office: 'dash', newTransfer: 'transfers', invoiceNew: 'invoices', checkin: 'home', alerts: null, help: null, property: 'dash' };
 
 function buildTabs() {
   $('tabs').innerHTML = TABS[me.role].map(function (t) { return '<button data-tab="' + t[0] + '">' + t[1] + '</button>'; }).join('');
@@ -769,6 +724,15 @@ function go(t, keepScroll, arg) {
   Promise.resolve(v(arg)).catch(function (e) { if (mine === navId) $('view').innerHTML = '<div class="card"><div class="muted">' + esc(e.message) + '</div></div>'; });
 }
 
+/** Several offices: a head admin gets a switch (All offices / one city); it is sent with every request and the server only honours it for head admins. */
+function setupOfficeSwitch(h) {
+  const sw = $('officeSwitch'), oi = h.officeInfo;
+  if (!sw) return;
+  if (!oi || !oi.multi || !oi.head || oi.offices.length < 2) { activeOffice = ''; sw.classList.add('hidden'); return; }
+  if (activeOffice && !oi.offices.some(function (o) { return o.id === activeOffice; })) activeOffice = '';
+  sw.innerHTML = '<option value="">All offices</option>' + oi.offices.map(function (o) { return '<option value="' + esc(o.id) + '"' + (o.id === activeOffice ? ' selected' : '') + '>' + esc(o.name) + '</option>'; }).join('');
+  sw.classList.remove('hidden');
+}
 function refreshHome() { return callBackend('home').then(function (h) { me = h; updateBadge(); return h; }); }
 
 // ===================== VIEWS =====================
@@ -790,6 +754,9 @@ VIEWS.home = function () {
       html += '<div class="banner ' + (h.checkin.overdue ? 'bad' : 'warn') + '"><div class="grow"><b>' + (h.checkin.overdue ? 'Check-in overdue' : 'Check-in needed') +
         '</b><div class="small">' + (h.checkin.old ? h.checkin.old + ' of your asset(s) are still recorded at your old property. ' : '') + (h.checkin.here ? h.checkin.here + ' asset(s) were already at ' + esc(h.checkin.location) + '. ' : '') + 'Tick the ones you have here so the records follow you. You can keep working meanwhile.</div></div>' +
         '<button class="btn" data-act="checkin">Check in now</button></div>';
+    }
+    if (h.invoicesDue) {
+      html += '<div class="banner warn"><div class="grow"><b>' + h.invoicesDue + (h.invoicesDue > 1 ? ' invoices' : ' invoice') + ' asked for</b><div class="small">An admin needs the invoice of a transfer. Send a picture of it.</div></div><button class="btn" data-go="invoices">Open Invoices</button></div>';
     }
     if (h.team && (h.team.dueConfirm || h.team.assignAlert)) {
       html += '<div class="banner warn"><div class="grow"><b>Assignments need attention</b><div class="small">' +
@@ -1057,6 +1024,7 @@ VIEWS.dash = function () {
       tile(h.openIssues, 'Open issues', '', 'issues') +
       tile(h.provisional, 'Awaiting acknowledgement', h.provisional ? 'warn' : '', 'flags') +
       tile(h.overdueCheckins, 'Overdue check-ins', h.overdueCheckins ? 'warn' : '', 'flags') +
+      tile(h.invoicesToReview || 0, 'Invoices to review', h.invoicesToReview ? 'warn' : '', 'invoices') +
       tile(d.office.devices + ' / ' + d.office.sdCards + (d.extraCategories || []).map(function (c) { return ' / ' + ((d.office.extras || {})[c.code] || 0); }).join(''), 'Office stock (devices / SD' + (d.extraCategories || []).map(function (c) { return ' / ' + c.label.toLowerCase(); }).join('') + ') · tap to see them', '', 'office') + '</div>';
     html += '<div class="card"><h2>Properties: working devices vs workforce today</h2><div class="tablewrap"><table><thead><tr><th>Property</th><th>Supervisor</th>' +
       '<th class="num">Workforce</th><th class="num">Working devices</th><th class="num">Needed</th><th>Device gap</th><th class="num">Faulty</th><th class="num">SD cards</th><th class="num">SD needed</th><th>SD gap</th>' + (d.extraCategories || []).map(function (c) { return '<th class="num">' + esc(c.label) + ' (working / faulty)</th>'; }).join('') + '</tr></thead><tbody>' +
@@ -1578,8 +1546,8 @@ function openReceive(transferId) {
 VIEWS.newTransfer = function (preselect) {
   const isAdmin = me.role === 'ADMIN';
   $('view').innerHTML = '<div class="card"><div class="row spread"><h2>' + (isAdmin ? 'Dispatch to a supervisor' : 'Send assets') + '</h2><button class="linkBtn" data-go="transfers">Back</button></div>' +
-    '<div class="stickyHead">' + (isAdmin ? '<label class="f">Supervisor receiving</label><select id="toSup"><option value="">Choose…</option></select>'
-      : '<label class="f">Send to</label><select id="toSup"><option value="OFFICE">' + esc(OPTS.ui.officeName) + '</option></select>') +
+    '<div class="stickyHead">' + (isAdmin ? '<label class="f">' + (me.officeInfo && me.officeInfo.multi ? 'Send to (a supervisor, or another city\'s office)' : 'Supervisor receiving') + '</label><select id="toSup"><option value="">Choose…</option></select>'
+      : '<label class="f">Send to</label><select id="toSup"><option value="OFFICE">' + esc(me.officeName || OPTS.ui.officeName) + '</option></select>') +
     '<label class="f">Assets (type to search, tick to add)</label><div id="sendSearch"></div>' +
     (isAdmin ? '<label class="f" style="margin-bottom:0"><input type="checkbox" id="showAll"> Include assets the records show elsewhere (flagged for review)</label>' : '<div class="small muted">Devices and SD cards at your property are listed, yours first.</div>') + '</div>' +
     '<div id="pickHost"></div>' +
@@ -1590,6 +1558,11 @@ VIEWS.newTransfer = function (preselect) {
   return Promise.all([cachedCall('picker', {}, 30000), cachedCall('supervisorList', {}, 300000)]).then(function (r) {
     const all = r[0];
     $('toSup').innerHTML += r[1].map(function (s) { return '<option value="' + esc(s.id) + '">' + (isAdmin ? '' : 'Supervisor: ') + esc(s.name) + ' (' + esc(s.location) + ')</option>'; }).join('');
+    const oi = me.officeInfo;
+    if (isAdmin && oi && oi.multi) {
+      const others = oi.offices.filter(function (o) { return o.id !== oi.own; });
+      if (others.length) $('toSup').innerHTML += '<optgroup label="Another city\'s office">' + others.map(function (o) { return '<option value="OFFICE:' + esc(o.id) + '">' + esc(o.name) + '</option>'; }).join('') + '</optgroup>';
+    }
     const pre = Array.isArray(preselect) ? preselect : [];
     const mineIds = {}; all.forEach(function (a) { if (a.mine) mineIds[a.id] = true; });
     const outsideMine = pre.some(function (id) { return !mineIds[id]; });
@@ -1600,10 +1573,10 @@ VIEWS.newTransfer = function (preselect) {
       const ids = picker.selected(), oth = others.values();
       if (!ids.length && !oth.length) return toast('Select at least one asset.', true);
       if (!$('toSup').value) return toast('Choose where the assets are going.', true);
-      const dest = $('toSup').value, toOffice = dest === 'OFFICE';
+      const dest = $('toSup').value.replace(/^OFFICE:/, ''), toOffice = $('toSup').value === 'OFFICE' || /^OFFICE:/.test($('toSup').value);
       busy(e.target, function () {
         const f = photo.file();   // the send goes through now; the photo follows in the background
-        return callBackend('createTransfer', { toType: toOffice ? 'OFFICE' : 'SUPERVISOR', toId: toOffice ? '' : dest, assetIds: ids, others: oth, note: $('note').value, photoPending: !!f }).then(function (res) {
+        return callBackend('createTransfer', { toType: toOffice ? 'OFFICE' : 'SUPERVISOR', toId: toOffice && dest !== 'OFFICE' ? dest : (toOffice ? '' : dest), assetIds: ids, others: oth, note: $('note').value, photoPending: !!f }).then(function (res) {
           if (f) photoQueue.add('transfer', [res.transferId], res.transferId, f);
           toast(res.itemCount + ' item(s) in transit · ' + res.transferId + (f ? ' · photo uploading in the background' : '')); go('transfers');
         });
@@ -1848,7 +1821,7 @@ VIEWS.search = function (preset) {
 function renderDetail(d) {
   const a = d.asset;
   let html = '<div class="card"><div class="row spread"><div><h2 style="margin:0;font-size:20px">' + esc(a.id) + ' <span class="muted" style="font-size:14px">' + esc(catLabel(a.category)) + ' ' + esc(a.subType) + ' ' + esc(a.capacity) + '</span></h2></div>' +
-    '<div class="row">' + pill(a.status.toLowerCase(), a.status === 'WORKING' ? 'ok' : 'bad') + (a.state !== 'AVAILABLE' ? pill(a.state.toLowerCase().replace('_', ' '), 'warn') : '') + (a.provisional ? pill('awaiting admin', 'prov') : '') + '</div></div>' +
+    '<div class="row">' + pill(a.status.toLowerCase(), a.status === 'WORKING' ? 'ok' : 'bad') + (a.state !== 'AVAILABLE' ? pill(a.state.toLowerCase().replace('_', ' '), 'warn') : '') + (a.provisional ? pill('awaiting admin', 'prov') : '') + (a.office ? pill(a.office, 'info') : '') + '</div></div>' +
     '<div class="fieldRow" style="margin-top:10px"><div><div class="small muted">Where it is now</div><b>' + esc(a.state === 'SHORT' ? 'Not received (' + a.locationName + ')' : a.locationName) + '</b></div>' +
     '<div><div class="small muted">Who has it</div><b>' + esc(a.holder) + '</b>' + (a.assignedTo ? '<div class="small">Using it today: ' + esc(a.assignedTo) + '</div>' : '') + '</div><div><div class="small muted">Last movement</div><b>' + fmt(a.lastMoveAt) + '</b></div></div>' +
     '<div class="row" style="margin-top:10px"><button class="btn secondary small" data-issue-for="' + esc(a.id) + '">Report issue</button>' + (a.state === 'AVAILABLE' ? '<button class="btn secondary small" data-send-for="' + esc(a.id) + '">Send / in transit</button>' : '') +
@@ -1867,7 +1840,7 @@ function renderDetail(d) {
 // ---- Flags ("needs attention") ----
 const FLAG_TITLES = {
   SHORT_RECEIPT: 'Short receipt', HOLDERLESS: 'No holder', CONFLICT: 'Custody conflict', POSSIBLY_MISSING: 'Possibly missing', CUSTODY_MISMATCH: 'Sent from a different holder',
-  PROVISIONAL_ASSET: 'Asset not in master list', CHECKIN_OVERDUE: 'Check-in overdue', STALE_TRANSIT: 'Stuck in transit', ASSET_MISSING: 'Reported missing', OFF_PLAN: 'Off planned movement', OFF_SCHEDULE: 'Not at scheduled property', CHECKIN_ASSET_UNCLAIMED: 'Left out of two check-ins'
+  PROVISIONAL_ASSET: 'Asset not in master list', CHECKIN_OVERDUE: 'Check-in overdue', STALE_TRANSIT: 'Stuck in transit', ASSET_MISSING: 'Reported missing', OFF_PLAN: 'Off planned movement', OFF_SCHEDULE: 'Not at scheduled property', INVOICE_OVERDUE: 'Invoice not sent', SUPERVISOR_OTHER_CITY: 'Supervisor working in another city', CHECKIN_ASSET_UNCLAIMED: 'Left out of two check-ins'
 };
 const ASSIGNABLE = ['HOLDERLESS', 'CONFLICT', 'POSSIBLY_MISSING', 'CUSTODY_MISMATCH'];
 
@@ -1908,10 +1881,11 @@ function renderFlags(all) {
       '<button class="btn secondary small" data-bar="dismiss">Dismiss</button>' +
       '<select id="barHolder" style="width:auto">' + holderOpts + '</select><button class="btn small" data-bar="assign">Assign</button>' +
       '<select id="barShort" style="width:auto"><option value="RECOVERED">It turned up - receive</option><option value="RETURN_TO_SENDER">Return to sender</option><option value="LOST">Mark lost</option></select><button class="btn small" data-bar="short">Settle short</button>' +
-      '<button class="btn small" data-bar="ack">Acknowledge</button><button class="btn secondary small" data-bar="retire">Retire</button><button class="btn secondary small" data-bar="clear">Clear</button>', {
+      '<button class="btn small" data-bar="home">Change home office</button><button class="btn small" data-bar="ack">Acknowledge</button><button class="btn secondary small" data-bar="retire">Retire</button><button class="btn secondary small" data-bar="clear">Clear</button>', {
       dismiss: function () { runBulk('DISMISS', { resolution: prompt('Why are you dismissing these? (optional)') || '' }); },
       assign: function () { const v = $('barHolder').value.split(':'); runBulk('ASSIGN', { holderType: v[0], holderId: v[0] === 'ADMIN' ? me.email : v[1] }); },
       short: function () { runBulk('SHORT', { resolution: $('barShort').value }); },
+      home: function () { runBulk('SET_HOME_OFFICE', {}); },
       ack: function () { runBulk('ACK', {}); },
       retire: function () { const why = prompt('These are not real assets (for example the device is already in the list under its real ID). They will disappear from all lists. Why? (optional)'); if (why === null) return; runBulk('RETIRE', { resolution: why || '' }); },
       clear: function () { sel.clear(); document.querySelectorAll('[data-fsel]').forEach(function (c) { c.checked = false; }); updateBar(); }
@@ -1929,6 +1903,7 @@ function renderFlags(all) {
       enable('dismiss', every(function (f) { return f.type !== 'SHORT_RECEIPT'; }));
       enable('assign', every(function (f) { return ASSIGNABLE.indexOf(f.type) !== -1 && f.assetId; }));
       enable('short', every(function (f) { return f.type === 'SHORT_RECEIPT'; }));
+      enable('home', every(function (f) { return f.type === 'SUPERVISOR_OTHER_CITY'; }));
       enable('ack', every(function (f) { return f.type === 'PROVISIONAL_ASSET'; }));
       enable('retire', every(function (f) { return f.type === 'PROVISIONAL_ASSET'; }));
       $('barHolder').disabled = !every(function (f) { return ASSIGNABLE.indexOf(f.type) !== -1 && f.assetId; });
@@ -2056,13 +2031,22 @@ function manageStayList(m) {
 
 /** One short line per row, per list. */
 const MANAGE_ROW = {
-  Admins: function (v) { return '<b>' + esc(v.Name) + '</b> ' + pill(String(v.Role).toLowerCase(), 'info') + ' ' + manageStatus(v.Status) + '<div class="small muted">' + esc(v.Email) + '</div>'; },
-  Supervisors: function (v, m) { return '<b>' + esc(v.Name) + '</b> ' + manageStatus(v.Status) + '<div class="small muted">' + esc(v.Email) + (v.Phone ? ' · ' + esc(v.Phone) : '') + '</div><div class="small">Location group: ' + esc(manageProp(m, v.CurrentLocationID) || 'none') + '</div>'; },
-  Properties: function (v, m) { return '<b>' + esc(v.Name || '(no name)') + '</b> <span class="muted">' + esc(v.LocationID) + '</span> ' + manageStatus(v.Status) + '<div class="small">Supervisor: ' + esc(v.Supervisor || 'none') + '</div><div class="small muted">SD cards per worker: ' + esc(v.SDPerWorker || 'default') + ' · devices: ' + esc(v.DevicePerWorker || 'default') + '</div>'; },
+  Offices: function (v) { return '<b>' + esc(v.Name) + '</b> <span class="muted">' + esc(v.OfficeID) + '</span> ' + manageStatus(v.Status) + '<div class="small muted">' + esc(v.City) + '</div>'; },
+  Admins: function (v, m) { return '<b>' + esc(v.Name) + '</b> ' + pill(String(v.Role).toLowerCase(), 'info') + ' ' + manageStatus(v.Status) + '<div class="small muted">' + esc(v.Email) + '</div>' + (m.choices.multiOffice && v.Role !== 'MANAGER' ? '<div class="small">Office: ' + esc(manageOffice(m, v.OfficeID, true)) + '</div>' : ''); },
+  Supervisors: function (v, m) { return '<b>' + esc(v.Name) + '</b> ' + manageStatus(v.Status) + '<div class="small muted">' + esc(v.Email) + (v.Phone ? ' · ' + esc(v.Phone) : '') + '</div><div class="small">Location group: ' + esc(manageProp(m, v.CurrentLocationID) || 'none') + '</div>' + (m.choices.multiOffice ? '<div class="small">Home office: ' + esc(manageOffice(m, v.HomeOfficeID)) + '</div>' : ''); },
+  Properties: function (v, m) { return '<b>' + esc(v.Name || '(no name)') + '</b> <span class="muted">' + esc(v.LocationID) + '</span> ' + manageStatus(v.Status) + '<div class="small">Supervisor: ' + esc(v.Supervisor || 'none') + '</div><div class="small muted">SD cards per worker: ' + esc(v.SDPerWorker || 'default') + ' · devices: ' + esc(v.DevicePerWorker || 'default') + '</div>' + (m.choices.multiOffice ? '<div class="small">Office: ' + esc(manageOffice(m, v.OfficeID)) + '</div>' : ''); },
   Shift_Times: function (v) { return '<b>' + esc(v.Shift) + '</b><div class="small muted">Assignments end at ' + esc(v.DeassignTime) + '</div>'; },
   Options: function (v) { return '<b>' + esc(v.Value) + '</b> ' + (v.Active === 'N' ? pill('hidden', '') : '') + '<div class="small muted">' + esc(v.Group) + (v.Effect ? ' · ' + esc(v.Effect) : '') + '</div>'; },
   Config: function (v) { return '<b>' + esc(v.Key) + '</b>: ' + esc(v.Value || '(empty)') + '<div class="small muted">' + esc(v.Description) + '</div>'; }
 };
+/** An office id as words (blank = the default office, which is the first in the list; ALL = a head admin). */
+function manageOffice(m, id, allowAll) {
+  const v = String(id || '').toUpperCase();
+  if (v === 'ALL' && allowAll) return 'All offices (head admin)';
+  const list = m.choices.offices || [];
+  const o = list.find(function (x) { return x.id === v; }) || (!v ? list[0] : null);
+  return o ? o.name + (!v ? ' (default)' : '') : (v || '(default)');
+}
 function manageStatus(s) { return pill(String(s || '').toLowerCase(), s === 'ACTIVE' ? 'ok' : ''); }
 function manageProp(m, id) { if (!id) return ''; const p = m.choices.properties.find(function (x) { return x.id === id; }); return p ? p.name + ' (' + id + ')' : id; }
 
@@ -2085,6 +2069,11 @@ function manageForm(m, tbl, row) {
       html += '<input type="text" id="' + id + '" list="' + id + '_dl" value="' + esc(val) + '"' + (off ? ' disabled' : '') + ' placeholder="e.g. SUBTYPE_OTHERS" autocapitalize="characters"><datalist id="' + id + '_dl">' +
         Object.keys(known).sort().map(function (g) { return '<option value="' + esc(g) + '">'; }).join('') + '</datalist>' +
         '<div class="small muted">Type <b>SUBTYPE_</b> and a name (for example SUBTYPE_OTHERS) to add a new asset category with that name; its rows are the kinds to pick from. <b>ISSUE_</b> and the same name sets its issue types.</div>';
+    } else if (c.type === 'office') {
+      const opts = [['', '(default office)']].concat(c.allowAll ? [['ALL', 'All offices (head admin)']] : []).concat((m.choices.offices || []).map(function (o) { return [o.id, o.name + ' · ' + o.city]; }));
+      html += '<select id="' + id + '"' + (off ? ' disabled' : '') + '>' + opts.map(function (o) { return '<option value="' + esc(o[0]) + '"' + (String(o[0]).toUpperCase() === String(val).toUpperCase() ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join('') + '</select>';
+    } else if (c.type === 'officeid') {
+      html += '<input type="text" id="' + id + '" value="' + esc(val) + '"' + (off ? ' disabled' : '') + ' placeholder="e.g. HYD" autocapitalize="characters" maxlength="8">';
     } else if (c.type === 'enum' || c.type === 'supervisor') {
       let opts;
       if (c.type === 'supervisor') opts = [['', '(no supervisor)']].concat(m.choices.supervisors.map(function (s) { return [s.email, s.name]; }));
@@ -2206,8 +2195,9 @@ VIEWS.manage = function () {
       sec('team', 'Team: who reports to whom', m.team.length, team) +
       sec('Supervisors', 'Supervisors', T.Supervisors.rows.length, listFor('Supervisors')) +
       sec('Properties', 'Properties and their supervisor', T.Properties.rows.length, listFor('Properties')) +
+      sec('Offices', 'Offices (cities)', T.Offices.rows.length, listFor('Offices')) +
       sec('Admins', 'Admins, ops and managers', T.Admins.rows.length, listFor('Admins')) +
-      sec('Options', 'Options (drop-down lists and rules)', T.Options.rows.length, '<select id="optGroup" style="margin-bottom:8px"><option value="">All lists</option>' + (function () { const k = {}; ['ISSUE_DEVICE', 'ISSUE_SD_CARD', 'SUBTYPE_DEVICE', 'SUBTYPE_SD_CARD', 'FLAG_SEVERITY', 'TEAM_ALIAS'].forEach(function (g) { k[g] = 1; }); T.Options.rows.forEach(function (r) { if (r.v && r.v.Group) k[r.v.Group] = 1; }); return Object.keys(k).sort(); })().map(function (g) { return '<option>' + g + '</option>'; }).join('') + '</select><div id="optList">' + listFor('Options') + '</div>') +
+      sec('Options', 'Options (drop-down lists and rules)', T.Options.rows.length, '<select id="optGroup" style="margin-bottom:8px"><option value="">All lists</option>' + (function () { const k = {}; ['ISSUE_DEVICE', 'ISSUE_SD_CARD', 'SUBTYPE_DEVICE', 'SUBTYPE_SD_CARD', 'FLAG_SEVERITY', 'TEAM_ALIAS', 'INVOICE_CATEGORY', 'PARCEL_BRAND'].forEach(function (g) { k[g] = 1; }); T.Options.rows.forEach(function (r) { if (r.v && r.v.Group) k[r.v.Group] = 1; }); return Object.keys(k).sort(); })().map(function (g) { return '<option>' + g + '</option>'; }).join('') + '</select><div id="optList">' + listFor('Options') + '</div>') +
       sec('Shift_Times', 'Shift times', T.Shift_Times.rows.length, listFor('Shift_Times')) +
       sec('Config', 'Settings', T.Config.rows.length, listFor('Config')) +
       sec('links', 'Property links and details (upcoming)', m.propertyLinks.rows.length, '<div id="stayHost">' + manageStayList(m) + '</div>') +
@@ -2264,7 +2254,17 @@ VIEWS.help = function () {
     '<div id="helpList">' + secs.map(function (s, i) { return '<details class="helpSec" data-i="' + i + '"><summary>' + esc(s.title) + '</summary><div class="helpBody">' + s.html + '</div></details>'; }).join('') + '</div>' +
     '<div id="helpNone" class="small muted hidden">Nothing matches. Try a different word, or contact your manager.</div>' + link +
     '<p class="small muted">App version: ' + esc((function () { const m = document.querySelector('meta[name="app-build"]'); const v = m ? m.content : ''; return !v || v === '__BUILD__' ? 'local copy' : v; })()) + '</p>' +
+    '<details class="helpSec" id="upTestSec"><summary>Test photo upload (for support)</summary><div class="helpBody"><p class="small muted">Sends a tiny test picture and shows where it stops, with timings. If photos or invoices fail to upload, press this and send the result to your manager.</p><div class="row"><button class="btn small" id="upTestRun">Run the test</button><button class="btn secondary small" id="upTestCopy">Copy</button></div><pre id="upTestOut" class="small" style="white-space:pre-wrap"></pre></div></details>' +
     '<details class="helpSec" id="speedSec"><summary>Speed check (for support)</summary><div class="helpBody"><p class="small muted">How long this phone waited for each kind of request since the app was opened. If the app feels slow, press Copy and send it to your manager.</p><pre id="speedOut" class="small" style="white-space:pre-wrap"></pre><div class="row"><button class="btn secondary small" id="speedCopy">Copy</button><button class="btn secondary small" id="speedReset">Start over</button></div></div></details></div>';
+  $('upTestRun').addEventListener('click', function (e) {
+    const out = $('upTestOut'); out.textContent = '';
+    busy(e.target, function () { return runUploadTest(function (l) { out.textContent += l + '\n'; }); });
+  });
+  $('upTestCopy').addEventListener('click', function () {
+    const t = $('upTestOut').textContent;
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(function () { toast('Copied'); }, function () { toast('Could not copy. Select the text and copy it.', true); });
+    else toast('Select the text and copy it.', true);
+  });
   const speedPaint = function () { $('speedOut').textContent = perfReport().join('\n'); };
   $('speedSec').addEventListener('toggle', speedPaint);
   $('speedReset').addEventListener('click', function () { PERF.since = Date.now(); PERF.calls = []; PERF.screens = []; speedPaint(); });
@@ -2458,6 +2458,13 @@ setTopbarVar();
 window.addEventListener('resize', setTopbarVar);
 
 // Someone with more than one role picks which one they are acting as; the whole app reloads for that role.
+$('officeSwitch').addEventListener('change', function () {
+  activeOffice = $('officeSwitch').value;
+  try { localStorage.setItem('at_office', activeOffice); } catch (e) { /* ignore */ }
+  memo = {}; memoEpoch++; officeData = null;
+  refreshHome().then(function (h) { if ($('userLabel') && h.officeInfo) $('userLabel').textContent = h.name + (h.roles.length > 1 ? '' : ' · ' + h.role.toLowerCase()) + (h.officeInfo.multi && h.officeInfo.label ? ' · ' + h.officeInfo.label : ''); }).catch(function () {});
+  go(tab, true);
+});
 $('roleSwitch').addEventListener('change', function () {
   if (teamDirty && !confirm('You have unsaved assignment changes. Switch role without saving?')) { $('roleSwitch').value = activeRole; return; }
   teamDirty = false; activeRole = $('roleSwitch').value;
