@@ -2263,7 +2263,7 @@ VIEWS.manage = function () {
     const tm = $('teamMode');
     if (tm) tm.addEventListener('change', function () { teamMode = tm.value; manageOpen.team = true; go('manage', true); });
     const ts = $('teamSearch');
-    if (ts) ts.addEventListener('input', function () { teamFilter = ts.value; manageOpen.team = true; VIEWS.manage(); document.getElementById('teamSearch').focus(); });
+    if (ts) ts.addEventListener('input', function () { teamFilter = ts.value; manageOpen.team = true; VIEWS.manage(); const again = document.getElementById('teamSearch'); again.focus(); again.setSelectionRange(again.value.length, again.value.length); });
     view.querySelectorAll('[data-team]').forEach(function (s) {
       s.addEventListener('change', function () {
         busy(s, function () {
