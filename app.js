@@ -73,7 +73,7 @@ function catPrefix(c) { return c === 'DEVICE' ? '' : catLabel(c) + ' '; }
 // ===================== TRANSPORT =====================
 
 // Actions that only read. Everything else is a save, which wipes the screen memo below.
-const READS = { officeStock: 1, checkinList: 1, managerOverview: 1, saveLocation: 1, stays: 1, home: 1, picker: 1, search: 1, issues: 1, flags: 1, notifications: 1, supervisors: 1, properties: 1, supervisorList: 1, team: 1, assignments: 1, report: 1, options: 1, transfers: 1, transferHistory: 1, officeBatches: 1, invoices: 1, pulse: 1, photoGet: 1, sync: 1 };
+const READS = { officeStock: 1, checkinList: 1, managerOverview: 1, saveLocation: 1, stays: 1, home: 1, picker: 1, search: 1, issues: 1, flags: 1, notifications: 1, supervisors: 1, properties: 1, supervisorList: 1, team: 1, assignments: 1, report: 1, options: 1, transfers: 1, transferHistory: 1, officeBatches: 1, invoices: 1, invoiceCheckins: 1, pulse: 1, photoGet: 1, sync: 1 };
 const NO_MEMO = { saveLocation: 1, search: 1, report: 1, photoGet: 1, pulse: 1, sync: 1, notifications: 1 };
 let memo = {};          // last answer for each read, so a screen can be drawn instantly while a fresh answer loads
 let memoEpoch = 0;      // bumped by every save, so an answer that was in flight during a save is not remembered
@@ -1360,6 +1360,11 @@ function transferCard(t) {
   if (t.photoFileId) html += '<button class="btn secondary small" data-photo="' + esc(t.photoFileId) + '">View photo</button>';
   else if (t.photoState === 'PENDING') html += '<span class="small muted">Photo on its way…</span>';
   else if (t.photoState === 'MISSING') html += pill('Photo missing (upload failed)', 'warn');
+  // invoices attached from the Invoices tab; an admin, or the supervisor on the transfer, can attach one from here
+  const invs = t.invoices || [];
+  if (invs.length) html += '<button class="linkBtn" data-go="invoices" style="margin-left:4px">' + pill('Invoice attached' + (invs.length > 1 ? ' (' + invs.length + ')' : ''), invs.every(function (x) { return x.status === 'APPROVED'; }) ? 'ok' : 'info') + '</button>';
+  if (me.role === 'ADMIN') invs.filter(function (x) { return x.status === 'SUBMITTED'; }).forEach(function (x) { html += '<button class="btn small" data-inv-approve="' + esc(x.id) + '">Approve invoice (₹' + x.amount + ')</button>'; });
+  if (me.role === 'ADMIN' || (me.role === 'SUPERVISOR' && (t.fromId === me.supervisorId || t.toId === me.supervisorId))) html += '<button class="btn secondary small" data-inv-attach="' + esc(t.id) + '">' + (invs.length ? 'Attach another invoice' : 'Attach invoice') + '</button>';
   return html + '</div></div>';
 }
 
@@ -2223,7 +2228,7 @@ VIEWS.manage = function () {
       sec('Properties', 'Properties and their supervisor', T.Properties.rows.length, listFor('Properties')) +
       sec('Offices', 'Offices (cities)', T.Offices.rows.length, listFor('Offices')) +
       sec('Admins', 'Admins, ops and managers', T.Admins.rows.length, listFor('Admins')) +
-      sec('Options', 'Options (drop-down lists and rules)', T.Options.rows.length, '<select id="optGroup" style="margin-bottom:8px"><option value="">All lists</option>' + (function () { const k = {}; ['ISSUE_DEVICE', 'ISSUE_SD_CARD', 'SUBTYPE_DEVICE', 'SUBTYPE_SD_CARD', 'FLAG_SEVERITY', 'TEAM_ALIAS', 'INVOICE_CATEGORY', 'PARCEL_BRAND'].forEach(function (g) { k[g] = 1; }); T.Options.rows.forEach(function (r) { if (r.v && r.v.Group) k[r.v.Group] = 1; }); return Object.keys(k).sort(); })().map(function (g) { return '<option>' + g + '</option>'; }).join('') + '</select><div id="optList">' + listFor('Options') + '</div>') +
+      sec('Options', 'Options (drop-down lists and rules)', T.Options.rows.length, '<select id="optGroup" style="margin-bottom:8px"><option value="">All lists</option>' + (function () { const k = {}; ['ISSUE_DEVICE', 'ISSUE_SD_CARD', 'SUBTYPE_DEVICE', 'SUBTYPE_SD_CARD', 'FLAG_SEVERITY', 'TEAM_ALIAS', 'INVOICE_CATEGORY', 'PARCEL_BRAND', 'LOGISTIC_BRAND_TRANSFER', 'LOGISTIC_BRAND_CHECKIN', 'LOGISTIC_BRAND_PROPS'].forEach(function (g) { k[g] = 1; }); T.Options.rows.forEach(function (r) { if (r.v && r.v.Group) k[r.v.Group] = 1; }); return Object.keys(k).sort(); })().map(function (g) { return '<option>' + g + '</option>'; }).join('') + '</select><div id="optList">' + listFor('Options') + '</div>') +
       sec('Shift_Times', 'Shift times', T.Shift_Times.rows.length, listFor('Shift_Times')) +
       sec('Config', 'Settings', T.Config.rows.length, listFor('Config')) +
       sec('links', 'Property links and details (upcoming)', m.propertyLinks.rows.length, '<div id="stayHost">' + manageStayList(m) + '</div>') +
