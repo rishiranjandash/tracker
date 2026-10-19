@@ -1,4 +1,4 @@
-﻿/**
+/**
  * INVOICES tab (supervisors and admins). Loaded after app.js and upload.js, and uses their globals.
  *
  * Sending an invoice never depends on the screen staying open: the form and the compressed pictures are saved on the phone first
@@ -98,7 +98,7 @@ function invOutboxHtml() {
       : it.state === 'RETRY' ? '<div class="small muted">No signal or the server is busy. It will be sent again by itself. ' + esc(it.error || '') + '</div>'
       : it.state === 'FAILED' ? '<div class="small" style="color:var(--bad)">Could not be sent: ' + esc(it.error || '') + '</div>'
       : '<div class="small muted">Saved on your phone. It will be sent in a moment.</div>';
-    return '<div class="card"><div class="row spread"><div><b>' + esc(f.category) + '</b> · ' + invMoney(f.amount) + '<div class="small muted">' + esc(f.brand) + ' · ' + esc(f.movementDate) + ' · ' + n + (n > 1 ? ' pictures' : ' picture') + ' (' + up + ' uploaded)</div></div>' +
+    return '<div class="card"><div class="row spread"><div><b>' + esc(f.refType === 'PROPS' ? 'Props bought' : f.category) + '</b> · ' + invMoney(f.amount) + '<div class="small muted">' + (f.brand ? esc(f.brand) + ' · ' : '') + esc(f.movementDate) + ' · ' + n + (n > 1 ? ' pictures' : ' picture') + ' (' + up + ' uploaded)</div></div>' +
       pill(it.state === 'SENDING' ? 'sending' : it.state === 'FAILED' ? 'not sent' : 'waiting', it.state === 'FAILED' ? 'bad' : 'info') + '</div>' + status +
       '<div class="row" style="margin-top:8px">' + (it.state === 'SENDING' ? '' : '<button class="btn small" data-inv-retry="' + esc(it.key) + '">' + (it.state === 'FAILED' ? 'Try again' : 'Send now') + '</button><button class="btn secondary small" data-inv-del="' + esc(it.key) + '">Delete</button>') + '</div></div>';
   }).join('');
@@ -106,6 +106,7 @@ function invOutboxHtml() {
 
 function invMoney(v) { const n = Number(String(v === undefined || v === null ? '' : v).replace(/[,\s]/g, '')) || 0; return '₹' + n.toLocaleString('en-IN', { minimumFractionDigits: n % 1 ? 2 : 0, maximumFractionDigits: 2 }); }
 function invStatusPill(s) { return s === 'APPROVED' ? pill('approved', 'ok') : s === 'REJECTED' ? pill('sent back', 'bad') : pill('waiting for review', 'info'); }
+function invForLabel(t) { return t === 'TRANSFER' ? 'Transfers' : t === 'CHECKIN' ? 'Check-ins' : t === 'PROPS' ? 'Props bought' : 'Not tied to anything'; }
 function invToday() { return new Date(Date.now() + 19800000).toISOString().slice(0, 10); }
 function invDaysAgo(n) { return new Date(Date.now() + 19800000 - n * 86400000).toISOString().slice(0, 10); }
 
@@ -113,7 +114,7 @@ function invDaysAgo(n) { return new Date(Date.now() + 19800000 - n * 86400000).t
 function invoiceCard(i, canReview) {
   const pics = i.photos.map(function (id, k) { return '<button class="btn secondary small" data-photo="' + esc(id) + '">Picture ' + (k + 1) + '</button>'; }).join('');
   return '<div class="card"><div class="row spread" style="align-items:flex-start"><div><b>' + invMoney(i.amount) + '</b> · ' + esc(i.category) +
-    '<div class="small muted">' + esc(i.brand) + ' · moved ' + esc(i.movementDate) + (i.transferId ? ' · ' + esc(i.transferId) : '') + '</div>' +
+    '<div class="small muted">' + (i.brand ? esc(i.brand) + ' · ' : '') + (i.refType === 'PROPS' ? 'bought ' : 'moved ') + esc(i.movementDate) + (i.refText ? ' · ' + esc(i.refText) : '') + '</div>' +
     (canReview ? '<div class="small">' + esc(i.by) + (i.office ? ' · ' + esc(i.office) : '') + '</div>' : '') +
     ((i.invoiceNo || i.trackingNo) ? '<div class="small muted">' + (i.invoiceNo ? 'Invoice ' + esc(i.invoiceNo) : '') + (i.invoiceNo && i.trackingNo ? ' · ' : '') + (i.trackingNo ? 'Tracking ' + esc(i.trackingNo) : '') + '</div>' : '') +
     (i.note ? '<div class="small">' + esc(i.note) + '</div>' : '') + '</div>' + invStatusPill(i.status) + '</div>' +
@@ -126,14 +127,14 @@ function invoiceCard(i, canReview) {
 
 function requestCard(r, isAdmin) {
   const tr = r.transfer;
-  return '<div class="card flag ' + (r.overdue ? 'HIGH' : 'MEDIUM') + '"><div class="row spread" style="align-items:flex-start"><div><b>' + (isAdmin ? esc(r.to) + ' · ' : '') + 'Invoice of ' + esc(r.transferId || 'a transfer') + '</b>' +
+  return '<div class="card flag ' + (r.overdue ? 'HIGH' : 'MEDIUM') + '"><div class="row spread" style="align-items:flex-start"><div><b>' + (isAdmin ? esc(r.to) + ' · ' : '') + (r.refType === 'PROPS' ? 'Props invoices' : 'Invoice of ' + esc(r.refText || r.transferId || 'a transfer')) + '</b>' +
     (tr ? '<div class="small muted">' + esc(tr.from) + ' → ' + esc(tr.to) + ' · sent ' + fmt(tr.createdAt) + (tr.items ? ' · ' + esc(tr.items) + ' item(s)' : '') + '</div>' : '') +
     (r.note ? '<div class="small">' + esc(r.note) + '</div>' : '') + '<div class="small muted">Asked by ' + esc(r.by) + (r.dueDate ? ' · due ' + esc(r.dueDate) : '') + '</div></div>' +
     (r.overdue ? pill('overdue', 'bad') : pill('requested', 'warn')) + '</div><div class="row" style="margin-top:8px">' +
-    (isAdmin ? '<button class="btn secondary small" data-inv-cancelreq="' + esc(r.id) + '">Cancel request</button>' : '<button class="btn small" data-inv-send="' + esc(r.id) + '" data-t="' + esc(r.transferId) + '">Send this invoice</button>') + '</div></div>';
+    (isAdmin ? '<button class="btn secondary small" data-inv-cancelreq="' + esc(r.id) + '">Cancel request</button>' : '<button class="btn small" data-inv-send="' + esc(r.id) + '" data-rt="' + esc(r.refType) + '" data-rid="' + esc(r.refId) + '">Send this invoice</button>') + '</div></div>';
 }
 
-let invFilter = { status: '', category: '', brand: '', supervisorId: '', from: '', to: '' };
+let invFilter = { status: '', category: '', brand: '', supervisorId: '', refType: '', from: '', to: '' };
 
 VIEWS.invoices = function () {
   const isAdmin = me.role === 'ADMIN' || me.role === 'OPS';
@@ -150,8 +151,10 @@ VIEWS.invoices = function () {
       if (isAdmin) {
         html += '<div class="tiles"><div class="tile"><div class="n">' + d.totals.count + '</div><div class="l">Invoices</div></div><div class="tile"><div class="n">' + invMoney(d.totals.amount) + '</div><div class="l">Total amount</div></div>' +
           '<div class="tile ' + (d.totals.toReview ? 'warn' : '') + '"><div class="n">' + d.totals.toReview + '</div><div class="l">To review</div></div></div>' +
+          '<div class="card"><b>Summary by what it is for</b>' + d.byType.map(function (b) { return '<button class="item linkBtn" data-inv-for="' + esc(b.type || 'NONE') + '" style="width:100%;text-align:left"><div class="grow">' + invForLabel(b.type) + '<div class="small muted">' + b.count + (b.count === 1 ? ' invoice' : ' invoices') + (b.toReview ? ' · ' + b.toReview + ' to review' : '') + '</div></div><b>' + invMoney(b.amount) + '</b></button>'; }).join('') + '</div>' +
           '<div class="card"><div class="row" style="gap:8px;flex-wrap:wrap"><select id="ifStatus" style="width:auto">' + opt(['SUBMITTED', 'APPROVED', 'REJECTED'], invFilter.status, 'Any status') + '</select>' +
-          '<select id="ifCat" style="width:auto">' + opt(o.categories, invFilter.category, 'Any category') + '</select><select id="ifBrand" style="width:auto">' + opt(o.brands, invFilter.brand, 'Any brand') + '</select>' +
+          '<select id="ifFor" style="width:auto">' + [['', 'Transfers, check-ins, props…'], ['TRANSFER', 'Transfers'], ['CHECKIN', 'Check-ins'], ['PROPS', 'Props bought']].map(function (x) { return '<option value="' + x[0] + '"' + (x[0] === invFilter.refType ? ' selected' : '') + '>' + x[1] + '</option>'; }).join('') + '</select>' +
+          '<select id="ifCat" style="width:auto">' + opt(o.categories, invFilter.category, 'Any category') + '</select><select id="ifBrand" style="width:auto">' + opt(o.brands, invFilter.brand, 'Any logistic brand') + '</select>' +
           '<select id="ifSup" style="width:auto"><option value="">Any supervisor</option>' + sl.map(function (s) { return '<option value="' + esc(s.id) + '"' + (s.id === invFilter.supervisorId ? ' selected' : '') + '>' + esc(s.name) + '</option>'; }).join('') + '</select>' +
           '<label class="small muted">Moved from<input type="date" id="ifFrom" value="' + esc(invFilter.from) + '"></label><label class="small muted">to<input type="date" id="ifTo" value="' + esc(invFilter.to) + '"></label>' +
           '<button class="btn secondary small" id="ifClear">Clear</button><button class="btn secondary small" data-report="invoices">Download CSV</button></div></div>';
@@ -159,9 +162,9 @@ VIEWS.invoices = function () {
       html += '<h3>' + (isAdmin ? 'Invoices' : 'My invoices') + '</h3>' + (d.invoices.length ? d.invoices.map(function (i) { return invoiceCard(i, d.canReview); }).join('') + (d.more ? '<p class="small muted">Showing the latest 200. Narrow the filters to see others.</p>' : '')
         : '<div class="card">' + emptyState(isAdmin ? 'No invoices match.' : 'You have not sent any invoices yet.') + '</div>');
       $('view').innerHTML = html;
-      const reload = function () { invFilter = { status: $('ifStatus').value, category: $('ifCat').value, brand: $('ifBrand').value, supervisorId: $('ifSup').value, from: $('ifFrom').value, to: $('ifTo').value }; go('invoices', true); };
-      ['ifStatus', 'ifCat', 'ifBrand', 'ifSup', 'ifFrom', 'ifTo'].forEach(function (id) { const e = $(id); if (e) e.addEventListener('change', reload); });
-      if ($('ifClear')) $('ifClear').addEventListener('click', function () { invFilter = { status: '', category: '', brand: '', supervisorId: '', from: '', to: '' }; go('invoices', true); });
+      const reload = function () { invFilter = { status: $('ifStatus').value, category: $('ifCat').value, brand: $('ifBrand').value, supervisorId: $('ifSup').value, refType: $('ifFor').value, from: $('ifFrom').value, to: $('ifTo').value }; go('invoices', true); };
+      ['ifStatus', 'ifFor', 'ifCat', 'ifBrand', 'ifSup', 'ifFrom', 'ifTo'].forEach(function (id) { const e = $(id); if (e) e.addEventListener('change', reload); });
+      if ($('ifClear')) $('ifClear').addEventListener('click', function () { invFilter = { status: '', category: '', brand: '', supervisorId: '', refType: '', from: '', to: '' }; go('invoices', true); });
       $('invNew').addEventListener('click', function () { pending($('invNew')); go('invoiceNew'); });
       if ($('invAsk')) $('invAsk').addEventListener('click', openInvoiceRequest);
     });
@@ -173,22 +176,25 @@ VIEWS.invoiceNew = function (arg) {
   arg = arg || {};
   $('view').innerHTML = '<div class="empty">Loading…</div>';
   const optsP = OPTS && OPTS.invoice ? Promise.resolve(OPTS.invoice) : fetchOpts().then(function (o) { OPTS = o; return o.invoice; });
-  return Promise.all([optsP, callBackend('transfers').catch(function () { return []; }), callBackend('transferHistory', { from: new Date(Date.now() - 60 * 86400000).toISOString() }).catch(function () { return { transfers: [] }; })]).then(function (r) {
+  return Promise.all([optsP, callBackend('transfers').catch(function () { return []; }), callBackend('transferHistory', { from: new Date(Date.now() - 60 * 86400000).toISOString() }).catch(function () { return { transfers: [] }; }), callBackend('invoiceCheckins').catch(function () { return []; })]).then(function (r) {
     const o = r[0] || { categories: [], brands: [], maxPhotos: 3 }, seen = {}, trs = [];
     r[1].concat(r[2].transfers || []).forEach(function (t) { if (!seen[t.id]) { seen[t.id] = true; trs.push(t); } });
     trs.sort(function (a, b) { return a.createdAt < b.createdAt ? 1 : -1; });
+    const cks = r[3] || [];
+    if (arg.transferId && !arg.refType) { arg.refType = 'TRANSFER'; arg.refId = arg.transferId; }
     const photos = [];   // { id, file, url, state: 'preparing'|'ready'|'error', b64, promise }
     const sel = function (id, list, ph) { return '<select id="' + id + '"><option value="">' + ph + '</option>' + list.map(function (x) { return '<option>' + esc(x) + '</option>'; }).join('') + '</select>'; };
     $('view').innerHTML = '<div class="card"><div class="row spread"><h2>New invoice</h2><button class="linkBtn" data-go="invoices">Back</button></div>' +
-      (arg.requestId ? '<div class="banner warn"><div class="grow small"><b>Requested by an admin:</b> invoice of ' + esc(arg.transferId || 'a transfer') + '.</div></div>' : '') +
-      '<label class="f">Category</label>' + sel('ivCat', o.categories, 'Choose…') +
+      (arg.requestId ? '<div class="banner warn"><div class="grow small"><b>Requested by an admin:</b> ' + (arg.refType === 'PROPS' ? 'props invoice' : 'invoice of ' + esc(arg.refText || arg.refId || 'a transfer')) + '.</div></div>' : '') +
+      '<label class="f">What is this invoice for?</label><select id="ivFor"><option value="TRANSFER">A transfer</option><option value="CHECKIN">A check-in</option><option value="PROPS">Props bought</option><option value="">Something else</option></select>' +
+      '<div id="ivRefBox"></div>' +
+      '<div id="ivCatBox"><label class="f">Category</label>' + sel('ivCat', o.categories, 'Choose…') + '</div>' +
       '<label class="f">Amount (₹)</label><input type="text" id="ivAmount" inputmode="decimal" placeholder="e.g. 1250.50">' +
-      '<label class="f">Parcel brand</label>' + sel('ivBrand', o.brands, 'Choose…') +
-      '<label class="f">Date of the movement</label><input type="date" id="ivDate" max="' + invToday() + '" value="' + esc(arg.movementDate || '') + '">' +
-      '<label class="f">Related transfer <span class="muted">(optional)</span></label><select id="ivTransfer"><option value="">None</option>' + trs.map(function (t) { return '<option value="' + esc(t.id) + '"' + (t.id === arg.transferId ? ' selected' : '') + '>' + esc(t.id) + ' · ' + esc(t.from) + ' → ' + esc(t.to) + ' · ' + fmt(t.createdAt) + '</option>'; }).join('') + '</select>' +
+      '<label class="f" id="ivBrandL">Logistic brand</label><select id="ivBrand"></select>' +
+      '<label class="f" id="ivDateL">Date of the movement</label><input type="date" id="ivDate" max="' + invToday() + '" value="' + esc(arg.movementDate || '') + '">' +
       '<label class="f">Invoice number <span class="muted">(optional)</span></label><input type="text" id="ivNo" maxlength="60">' +
       '<label class="f">Tracking / AWB number <span class="muted">(optional)</span></label><input type="text" id="ivTrack" maxlength="60">' +
-      '<label class="f">Note <span class="muted">(optional)</span></label><textarea id="ivNote" maxlength="500"></textarea>' +
+      '<label class="f" id="ivNoteL">Note <span class="muted">(optional)</span></label><textarea id="ivNote" maxlength="500"></textarea>' +
       '<label class="f">Pictures of the invoice (up to ' + o.maxPhotos + ')</label><div id="ivPics" class="row" style="gap:8px;flex-wrap:wrap"></div>' +
       '<div style="margin-top:8px"><button type="button" class="btn secondary small" id="ivAddWrap">Add a picture</button><input type="file" accept="image/*" id="ivFile" style="display:none"></div>' +
       '<div class="row" style="margin-top:14px"><button class="btn" id="ivSubmit">Submit invoice</button></div><div class="small" id="ivMsg" style="margin-top:8px"></div>' +
@@ -203,6 +209,21 @@ VIEWS.invoiceNew = function (arg) {
       $('ivAddWrap').style.display = photos.length >= o.maxPhotos ? 'none' : 'inline-block';
       $('ivPics').querySelectorAll('[data-ivrm]').forEach(function (b) { b.addEventListener('click', function () { const k = photos.findIndex(function (p) { return p.id === b.dataset.ivrm; }); if (k >= 0) { URL.revokeObjectURL(photos[k].url); photos.splice(k, 1); paintPics(); } }); });
     };
+    const refList = { TRANSFER: trs.map(function (t) { return [t.id, t.id + ' · ' + t.from + ' → ' + t.to + ' · ' + fmt(t.createdAt)]; }),
+      CHECKIN: cks.map(function (c) { return [c.id, (me.role === 'SUPERVISOR' ? '' : c.supervisor + ' · ') + c.place + ' · ' + fmt(c.at) + (c.status === 'DONE' ? '' : ' (' + c.status.toLowerCase() + ')')]; }) };
+    const syncFor = function (keepRef) {
+      const k = $('ivFor').value, list = refList[k];
+      $('ivRefBox').innerHTML = list ? '<label class="f">' + (k === 'CHECKIN' ? 'Which check-in' : 'Which transfer') + '</label><select id="ivRef"><option value="">Choose…</option>' + list.map(function (x) { return '<option value="' + esc(x[0]) + '"' + (keepRef && x[0] === arg.refId ? ' selected' : '') + '>' + esc(x[1]) + '</option>'; }).join('') + '</select>' + (list.length ? '' : '<div class="small muted">' + (k === 'CHECKIN' ? 'No check-ins in the last 90 days.' : 'No transfers found.') + '</div>') : '';
+      $('ivCatBox').style.display = k === 'PROPS' ? 'none' : '';
+      const bl = (o.brandsBy && o.brandsBy[k || 'TRANSFER']) || o.brands || [], opt = !!k && k !== 'TRANSFER';
+      $('ivBrand').innerHTML = '<option value="">' + (opt ? 'None' : 'Choose…') + '</option>' + bl.map(function (x) { return '<option>' + esc(x) + '</option>'; }).join('');
+      $('ivBrandL').innerHTML = 'Logistic brand' + (opt ? ' <span class="muted">(optional)</span>' : '');
+      $('ivDateL').textContent = k === 'PROPS' ? 'Date of the purchase' : k === 'CHECKIN' ? 'Date of the check-in trip' : 'Date of the movement';
+      $('ivNoteL').innerHTML = k === 'PROPS' ? 'What was bought' : 'Note <span class="muted">(optional)</span>';
+    };
+    $('ivFor').value = ['TRANSFER', 'CHECKIN', 'PROPS'].indexOf(arg.refType) !== -1 ? arg.refType : (arg.refType === '' && arg.requestId ? '' : 'TRANSFER');
+    $('ivFor').addEventListener('change', function () { syncFor(false); });
+    syncFor(true);
     $('ivAddWrap').addEventListener('click', function () { $('ivFile').click(); });
     $('ivFile').addEventListener('change', function () {
       const f = $('ivFile').files[0]; $('ivFile').value = '';
@@ -213,13 +234,16 @@ VIEWS.invoiceNew = function (arg) {
     });
     $('ivSubmit').addEventListener('click', function (e) {
       busy(e.target, async function () {
-        const fields = { category: $('ivCat').value, amount: $('ivAmount').value.trim(), brand: $('ivBrand').value, movementDate: $('ivDate').value, transferId: $('ivTransfer').value, requestId: arg.requestId || '',
+        const fields = { category: $('ivCat').value, amount: $('ivAmount').value.trim(), brand: $('ivBrand').value, movementDate: $('ivDate').value, refType: $('ivFor').value, refId: $('ivRef') ? $('ivRef').value : '', requestId: arg.requestId || '',
           invoiceNo: $('ivNo').value.trim(), trackingNo: $('ivTrack').value.trim(), note: $('ivNote').value.trim() };
+        if (fields.refType === 'PROPS') fields.category = 'Props bought';
+        if (fields.refType && fields.refType !== 'PROPS' && !fields.refId) return msg('Choose the ' + (fields.refType === 'CHECKIN' ? 'check-in' : 'transfer') + ', or pick "Something else".', true);
+        if (fields.refType === 'PROPS' && !fields.note) return msg('Say what was bought, in the note.', true);
         if (!fields.category) return msg('Choose the category.', true);
         const amt = Number(fields.amount.replace(/[,\s]/g, ''));
         if (!(amt > 0)) return msg('Enter the invoice amount.', true);
-        if (!fields.brand) return msg('Choose the parcel brand.', true);
-        if (!fields.movementDate) return msg('Choose the date of the movement.', true);
+        if (!fields.brand && fields.refType !== 'PROPS' && fields.refType !== 'CHECKIN') return msg('Choose the logistic brand.', true);
+        if (!fields.movementDate) return msg('Choose the date.', true);
         if (fields.movementDate > invToday()) return msg('The date of the movement cannot be in the future.', true);
         if (!photos.length) return msg('Add at least one picture of the invoice.', true);
         msg('Getting the pictures ready…');
@@ -239,33 +263,58 @@ VIEWS.invoiceNew = function (arg) {
 
 // ---------- admin: request invoices for transfers ----------
 function openInvoiceRequest() {
-  openModal('<div class="row spread"><h2>Request invoices</h2><button class="linkBtn" data-close>Close</button></div><p class="small muted">Pick the transfers (past or present) you need an invoice for. The supervisor on each transfer is asked.</p>' +
-    '<input type="text" id="irSearch" placeholder="Find a transfer, supervisor or date…"><div id="irList" class="small muted" style="margin:8px 0">Loading…</div>' +
-    '<label class="f">Note <span class="muted">(optional)</span></label><input type="text" id="irNote" maxlength="300" placeholder="e.g. for the October accounts">' +
+  openModal('<div class="row spread"><h2>Request invoices</h2><button class="linkBtn" data-close>Close</button></div>' +
+    '<label class="f">What for?</label><select id="irKind"><option value="TRANSFER">Transfers</option><option value="CHECKIN">Check-ins</option><option value="PROPS">Props bought</option></select>' +
+    '<p class="small muted" id="irHelp" style="margin:6px 0"></p>' +
+    '<input type="text" id="irSearch" placeholder="Search…"><div id="irList" class="small muted" style="margin:8px 0">Loading…</div>' +
+    '<label class="f" id="irNoteL">Note <span class="muted">(optional)</span></label><input type="text" id="irNote" maxlength="300" placeholder="e.g. for the October accounts">' +
     '<label class="f">Due date <span class="muted">(optional, otherwise a few days from now)</span></label><input type="date" id="irDue" min="' + invToday() + '">' +
     '<div class="row" style="margin-top:12px"><button class="btn" id="irGo">Ask for the invoices</button><span class="small muted" id="irCount" style="margin-left:8px"></span></div><div class="small" id="irMsg" style="margin-top:8px"></div>', function (box) {
-    const chosen = {}; let all = [];
+    const chosen = {}; const lists = {}; let kind = 'TRANSFER';
     const count = function () { const n = Object.keys(chosen).filter(function (k) { return chosen[k]; }).length; box.querySelector('#irCount').textContent = n ? n + ' selected' : ''; };
     const paint = function () {
       const q = box.querySelector('#irSearch').value.trim().toLowerCase();
-      const rows = all.filter(function (t) { return !q || (t.id + ' ' + t.from + ' ' + t.to + ' ' + t.sentBy + ' ' + t.status + ' ' + fmt(t.createdAt)).toLowerCase().indexOf(q) !== -1; }).slice(0, 60);
-      box.querySelector('#irList').innerHTML = rows.length ? rows.map(function (t) {
-        return '<label class="item" style="cursor:pointer"><input type="checkbox" data-irt="' + esc(t.id) + '"' + (chosen[t.id] ? ' checked' : '') + ' style="width:20px;height:20px"><div class="grow"><b>' + esc(t.id) + '</b> · ' + esc(t.from) + ' → ' + esc(t.to) + '<div class="small muted">' + fmt(t.createdAt) + ' · ' + esc(t.status.toLowerCase().replace('_', ' ')) + ' · ' + esc(t.items.length) + ' item(s)</div></div></label>';
-      }).join('') + (all.length > 60 ? '<div class="small muted">Showing 60: search to narrow.</div>' : '') : 'No transfers found.';
+      const rows = (lists[kind] || []).filter(function (x) { return !q || x.search.toLowerCase().indexOf(q) !== -1; }).slice(0, 60);
+      box.querySelector('#irList').innerHTML = lists[kind] ? (rows.length ? rows.map(function (x) {
+        return '<label class="item" style="cursor:pointer"><input type="checkbox" data-irt="' + esc(x.id) + '"' + (chosen[x.id] ? ' checked' : '') + ' style="width:20px;height:20px"><div class="grow"><b>' + esc(x.title) + '</b><div class="small muted">' + esc(x.sub) + '</div></div></label>';
+      }).join('') + ((lists[kind].length > 60) ? '<div class="small muted">Showing 60: search to narrow.</div>' : '') : 'Nothing found.') : 'Loading…';
       box.querySelectorAll('[data-irt]').forEach(function (c) { c.addEventListener('change', function () { chosen[c.dataset.irt] = c.checked; count(); }); });
     };
-    Promise.all([callBackend('transfers'), callBackend('transferHistory', { from: new Date(Date.now() - 120 * 86400000).toISOString() })]).then(function (r) {
-      const seen = {}; all = [];
-      r[0].concat(r[1].transfers || []).forEach(function (t) { if (!seen[t.id] && (t.fromType === 'SUPERVISOR' || t.toType === 'SUPERVISOR')) { seen[t.id] = true; all.push(t); } });
-      all.sort(function (a, b) { return a.createdAt < b.createdAt ? 1 : -1; }); paint();
-    }).catch(function (e) { box.querySelector('#irList').textContent = 'Could not load the transfers. ' + (e && e.message || ''); });
+    const load = {
+      TRANSFER: function () {
+        return Promise.all([callBackend('transfers'), callBackend('transferHistory', { from: new Date(Date.now() - 120 * 86400000).toISOString() })]).then(function (r) {
+          const seen = {}, all = [];
+          r[0].concat(r[1].transfers || []).forEach(function (t) { if (!seen[t.id] && (t.fromType === 'SUPERVISOR' || t.toType === 'SUPERVISOR')) { seen[t.id] = true; all.push(t); } });
+          all.sort(function (a, b) { return a.createdAt < b.createdAt ? 1 : -1; });
+          return all.map(function (t) { return { id: t.id, title: t.id + ' · ' + t.from + ' → ' + t.to, sub: fmt(t.createdAt) + ' · ' + t.status.toLowerCase().replace('_', ' ') + ' · ' + t.items.length + ' item(s)' + ((t.invoices || []).length ? ' · invoice attached' : ''), search: t.id + ' ' + t.from + ' ' + t.to + ' ' + t.sentBy + ' ' + t.status + ' ' + fmt(t.createdAt) }; });
+        });
+      },
+      CHECKIN: function () {
+        return callBackend('invoiceCheckins').then(function (l) { return l.map(function (c) { return { id: c.id, title: c.supervisor + ' · ' + c.place, sub: fmt(c.at) + ' · ' + c.status.toLowerCase(), search: c.supervisor + ' ' + c.place + ' ' + fmt(c.at) }; }); });
+      },
+      PROPS: function () {
+        return cachedCall('supervisorList', {}, 300000).then(function (l) { return l.map(function (s) { return { id: s.id, title: s.name, sub: 'Ask for their props invoices', search: s.name }; }); });
+      }
+    };
+    const help = { TRANSFER: 'Pick the transfers (past or present) you need an invoice for. The supervisor on each transfer is asked.', CHECKIN: 'Pick the check-ins you need an invoice for. The supervisor who did each one is asked.', PROPS: 'Pick the supervisors who bought props. Say what the invoices are for in the note.' };
+    const show = function () {
+      box.querySelector('#irHelp').textContent = help[kind];
+      box.querySelector('#irNoteL').innerHTML = kind === 'PROPS' ? 'What for' : 'Note <span class="muted">(optional)</span>';
+      Object.keys(chosen).forEach(function (k) { delete chosen[k]; }); count(); box.querySelector('#irSearch').value = '';
+      if (lists[kind]) return paint();
+      paint(); load[kind]().then(function (l) { lists[kind] = l; if (kind === this) paint(); }.bind(kind)).catch(function (e) { box.querySelector('#irList').textContent = 'Could not load the list. ' + (e && e.message || ''); });
+    };
+    box.querySelector('#irKind').addEventListener('change', function () { kind = box.querySelector('#irKind').value; show(); });
     box.querySelector('#irSearch').addEventListener('input', paint);
+    show();
     box.querySelector('#irGo').addEventListener('click', function (e) {
       const ids = Object.keys(chosen).filter(function (k) { return chosen[k]; });
       const msg = box.querySelector('#irMsg');
-      if (!ids.length) { msg.textContent = 'Tick at least one transfer.'; msg.style.color = 'var(--bad)'; return; }
+      if (!ids.length) { msg.textContent = 'Tick at least one.'; msg.style.color = 'var(--bad)'; return; }
       busy(e.target, function () {
-        return callBackend('requestInvoices', { transferIds: ids, note: box.querySelector('#irNote').value, dueDate: box.querySelector('#irDue').value }).then(function (r) {
+        const payload = { refType: kind, note: box.querySelector('#irNote').value, dueDate: box.querySelector('#irDue').value };
+        if (kind === 'PROPS') payload.supervisorIds = ids; else payload.refIds = ids;
+        return callBackend('requestInvoices', payload).then(function (r) {
           closeModal(); toast(r.created + ' request(s) sent' + (r.skipped.length ? ' · ' + r.skipped.length + ' skipped (' + r.skipped.slice(0, 2).map(function (s) { return s.transferId + ': ' + s.reason; }).join('; ') + (r.skipped.length > 2 ? '…' : '') + ')' : ''));
           go('invoices', true);
         }).catch(function (err) { msg.textContent = err.message; msg.style.color = 'var(--bad)'; });
@@ -276,7 +325,7 @@ function openInvoiceRequest() {
 
 // ---------- clicks ----------
 document.addEventListener('click', function (e) {
-  const t = e.target.closest('[data-inv-approve],[data-inv-reject],[data-inv-cancelreq],[data-inv-send],[data-inv-retry],[data-inv-del]');
+  const t = e.target.closest('[data-inv-approve],[data-inv-reject],[data-inv-cancelreq],[data-inv-send],[data-inv-attach],[data-inv-for],[data-inv-retry],[data-inv-del]');
   if (!t) return;
   const d = t.dataset;
   if (d.invRetry) { const it = invOutbox.find(function (x) { return x.key === d.invRetry; }); if (it) { it.state = 'PENDING'; it.tries = 0; it.error = ''; invSave(it); invPaint(); invPump(); } return; }
@@ -284,9 +333,11 @@ document.addEventListener('click', function (e) {
     if (!confirm('Delete this invoice from your phone? It has not been sent.')) return;
     invOutbox = invOutbox.filter(function (x) { return x.key !== d.invDel; }); LocalStore.del(d.invDel).catch(function () {}); invPaint(); return;
   }
-  if (d.invSend) { return go('invoiceNew', false, { requestId: d.invSend, transferId: d.t }); }
+  if (d.invSend) { return go('invoiceNew', false, { requestId: d.invSend, refType: d.rt, refId: d.rid }); }
+  if (d.invAttach) { return go('invoiceNew', false, { refType: 'TRANSFER', refId: d.invAttach }); }
+  if (d.invFor) { invFilter.refType = d.invFor === 'NONE' ? '' : d.invFor; return go('invoices', true); }
   if (d.invApprove) {
-    return busy(t, function () { return callBackend('reviewInvoice', { invoiceId: d.invApprove, decision: 'APPROVE' }).then(function () { toast('Approved'); go('invoices', true); }); });
+    return busy(t, function () { return callBackend('reviewInvoice', { invoiceId: d.invApprove, decision: 'APPROVE' }).then(function () { toast('Approved'); go(tab, true); }); });
   }
   if (d.invCancelreq) {
     return busy(t, function () { return callBackend('cancelInvoiceRequest', { requestId: d.invCancelreq }).then(function () { toast('Request cancelled'); go('invoices', true); }); });
