@@ -421,10 +421,12 @@ function modalOpen() { return !!$('modalHost').firstChild; }
 
 /** Runs a save from a button: the button says it is working (and cannot be pressed twice) until the answer is back. */
 function busy(btn, fn) {
+  // a drop-down or text box keeps its contents (changing its text would wipe the options and the value the save is about to read)
+  const field = ['SELECT', 'INPUT', 'TEXTAREA'].indexOf(btn.tagName) !== -1;
   btn.disabled = true;
-  const old = btn.innerHTML;
-  btn.classList.add('loading'); btn.textContent = 'Working…';
-  return Promise.resolve().then(fn).catch(toastError).then(function () { btn.disabled = false; btn.classList.remove('loading'); btn.innerHTML = old; });
+  const old = field ? '' : btn.innerHTML;
+  btn.classList.add('loading'); if (!field) btn.textContent = 'Working…';
+  return Promise.resolve().then(fn).catch(toastError).then(function () { btn.disabled = false; btn.classList.remove('loading'); if (!field) btn.innerHTML = old; });
 }
 /** A button that only opens another screen: show it was pressed while that screen loads (the screen replaces it when it appears). */
 function pending(btn) {
