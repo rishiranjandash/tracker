@@ -77,6 +77,7 @@ const READS = { officeStock: 1, checkinList: 1, managerOverview: 1, saveLocation
 const NO_MEMO = { saveLocation: 1, search: 1, report: 1, photoGet: 1, pulse: 1, sync: 1, notifications: 1 };
 let memo = {};          // last answer for each read, so a screen can be drawn instantly while a fresh answer loads
 let memoEpoch = 0;      // bumped by every save, so an answer that was in flight during a save is not remembered
+let pulseNv = '';       // the version of the alerts this phone last counted
 let lastStamp = '';     // change detector from the 45-second pulse
 function memoKey(action, payload) { return action + '|' + JSON.stringify(payload || {}); }
 
@@ -143,10 +144,12 @@ function netEnd(action) {
   netInflight = Math.max(0, netInflight - 1);
   if (!netInflight) { clearTimeout(netTimer); netBarSet(); }
 }
-function perfNote(action, t0, res, failed) {
-  PERF.calls.push({ action: action, ms: Math.round(performance.now() - t0), server: res && typeof res.ms === 'number' ? res.ms : null, lock: res && typeof res.lockMs === 'number' ? res.lockMs : null, failed: !!failed, at: Date.now() });
+function perfNote(action, t0, res, failed, errMsg) {
+  PERF.calls.push({ action: action, ms: Math.round(performance.now() - t0), server: res && typeof res.ms === 'number' ? res.ms : null, lock: res && typeof res.lockMs === 'number' ? res.lockMs : null, failed: !!failed, err: failed ? perfErr(errMsg) : '', at: Date.now() });
   if (PERF.calls.length > 400) PERF.calls.shift();
 }
+/** The reason a call failed, shortened and with ids and numbers blurred so the same reason groups together. */
+function perfErr(m) { return String(m || 'no reason given').replace(/[A-Z]{1,4}-\d+/g, '#').replace(/\d+/g, 'n').replace(/\s+/g, ' ').trim().slice(0, 70); }
 function perfScreen(name, ms, cached) {
   PERF.screens.push({ name: name, ms: Math.round(ms), cached: !!cached, at: Date.now() });
   if (PERF.screens.length > 200) PERF.screens.shift();
@@ -156,8 +159,8 @@ function fmtSecs(ms) { return (ms / 1000).toFixed(1) + 's'; }
 function perfReport() {
   const by = {};
   PERF.calls.forEach(function (c) {
-    const o = by[c.action] = by[c.action] || { n: 0, tot: 0, max: 0, srv: 0, srvN: 0, lock: 0, lockN: 0, fail: 0 };
-    o.n++; o.tot += c.ms; o.max = Math.max(o.max, c.ms); if (c.failed) o.fail++;
+    const o = by[c.action] = by[c.action] || { n: 0, tot: 0, max: 0, srv: 0, srvN: 0, lock: 0, lockN: 0, fail: 0, errs: {} };
+    o.n++; o.tot += c.ms; o.max = Math.max(o.max, c.ms); if (c.failed) { o.fail++; if (c.err) o.errs[c.err] = (o.errs[c.err] || 0) + 1; }
     if (c.server !== null) { o.srv += c.server; o.srvN++; }
     if (c.lock !== null) { o.lock += c.lock; o.lockN++; }
   });
@@ -166,7 +169,7 @@ function perfReport() {
   Object.keys(by).sort(function (a, b) { return by[b].tot - by[a].tot; }).forEach(function (k) {
     const o = by[k];
     lines.push(k + ' · ' + o.n + 'x · avg ' + fmtSecs(o.tot / o.n) + (o.srvN ? ' (server ' + fmtSecs(o.srv / o.srvN) + ')' : '') + ' · slowest ' + fmtSecs(o.max) +
-      (o.lockN ? ' · waited for turn ' + fmtSecs(o.lock / o.lockN) : '') + (o.fail ? ' · ' + o.fail + ' failed' : ''));
+      (o.lockN ? ' · waited for turn ' + fmtSecs(o.lock / o.lockN) : '') + (o.fail ? ' · ' + o.fail + ' failed' + (Object.keys(o.errs).length ? ' (' + Object.keys(o.errs).sort(function (x, y) { return o.errs[y] - o.errs[x]; }).slice(0, 2).map(function (k) { return o.errs[k] + 'x ' + k; }).join('; ') + ')' : '') : ''));
   });
   const sc = {};
   PERF.screens.forEach(function (s) { const o = sc[s.name] = sc[s.name] || { n: 0, fresh: 0, freshN: 0, cachedN: 0 }; o.n++; if (s.cached) o.cachedN++; else { o.fresh += s.ms; o.freshN++; } });
@@ -196,8 +199,8 @@ function perfFlush(force) {
   if (!calls.length && !screens.length) return;
   const by = {};
   calls.forEach(function (c) {
-    const o = by[c.action] = by[c.action] || { name: c.action, count: 0, tot: 0, maxMs: 0, srv: 0, srvN: 0, lock: 0, lockN: 0, failed: 0 };
-    o.count++; o.tot += c.ms; o.maxMs = Math.max(o.maxMs, c.ms); if (c.failed) o.failed++;
+    const o = by[c.action] = by[c.action] || { name: c.action, count: 0, tot: 0, maxMs: 0, srv: 0, srvN: 0, lock: 0, lockN: 0, failed: 0, errs: {} };
+    o.count++; o.tot += c.ms; o.maxMs = Math.max(o.maxMs, c.ms); if (c.failed) { o.failed++; if (c.err) o.errs[c.err] = (o.errs[c.err] || 0) + 1; }
     if (c.server !== null) { o.srv += c.server; o.srvN++; } if (c.lock !== null) { o.lock += c.lock; o.lockN++; }
   });
   const sc = {};
@@ -206,7 +209,8 @@ function perfFlush(force) {
   const body = JSON.stringify({
     sessionToken: sessionToken || undefined, googleIdToken: sessionToken ? undefined : idToken, mode: 'perf', device: perfDevice(), network: conn.effectiveType || '',
     minutes: Math.round((Date.now() - (since || PERF.since)) / 60000),
-    calls: Object.keys(by).map(function (k) { const o = by[k]; return { name: o.name, count: o.count, avgMs: o.tot / o.count, maxMs: o.maxMs, avgServerMs: o.srvN ? o.srv / o.srvN : null, avgLockMs: o.lockN ? o.lock / o.lockN : null, failed: o.failed }; }),
+    calls: Object.keys(by).map(function (k) { const o = by[k]; return { name: o.name, count: o.count, avgMs: o.tot / o.count, maxMs: o.maxMs, avgServerMs: o.srvN ? o.srv / o.srvN : null, avgLockMs: o.lockN ? o.lock / o.lockN : null, failed: o.failed,
+      errors: Object.keys(o.errs).sort(function (x, y) { return o.errs[y] - o.errs[x]; }).slice(0, 3).map(function (k) { return o.errs[k] + 'x ' + k; }).join('; ') }; }),
     screens: Object.keys(sc).map(function (k) { const o = sc[k]; return { name: o.name, count: o.count, avgMs: o.fresh ? o.tot / o.fresh : 0, cached: o.cached }; })
   });
   perfSentAt = Date.now();
@@ -218,8 +222,8 @@ document.addEventListener('visibilitychange', function () { if (document.hidden)
 function rawCall(action, payload) {
   const t0 = performance.now();
   netStart(action);
-  return rawCall0_(action, payload).then(function (res) { netEnd(action); perfNote(action, t0, res, !(res && res.ok)); return res; },
-    function (e) { netEnd(action); perfNote(action, t0, null, true); throw e; }).then(handleResult);
+  return rawCall0_(action, payload).then(function (res) { netEnd(action); perfNote(action, t0, res, !(res && res.ok), res && res.error); return res; },
+    function (e) { netEnd(action); perfNote(action, t0, null, true, e && e.message); throw e; }).then(handleResult);
 }
 function rawCall0_(action, payload) {
   if (window.MOCK_BACKEND) {
@@ -679,8 +683,9 @@ function updateBadge() {
 let pulseCount = 0;
 function poll() {
   if (!me || document.hidden) return;
-  callBackend('pulse').then(function (p) {
-    me.unread = p.unread; updateBadge();
+  callBackend('pulse', { nv: pulseNv || undefined }).then(function (p) {
+    if (p.unread !== undefined) me.unread = p.unread;   // left out when this phone already has the current count
+    pulseNv = p.nv || ''; updateBadge();
     syncOpts(p.optionsStamp);   // a manager changed the lists: this phone picks the new ones up quietly
     const changed = lastStamp && p.stamp !== lastStamp;
     lastStamp = p.stamp;
