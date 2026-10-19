@@ -2147,6 +2147,27 @@ function manageOpenForm(m, tbl, row) {
   });
 }
 
+/** Location challenges waiting for the manager: shown at the very top of Manage. Approve puts the given link on the ONE check-in that was challenged. */
+function manageChallengesHtml(m) {
+  const list = m.challenges || [];
+  if (!list.length) return '';
+  const short = function (u) { u = String(u || ''); return u.length > 48 ? u.slice(0, 46) + '…' : u; };
+  return '<div class="card flag HIGH"><h2 style="margin:0 0 6px">' + list.length + (list.length > 1 ? ' location challenges' : ' location challenge') + ' to decide</h2>' + list.map(function (c) {
+    const can = c.found && c.editable && c.link;
+    const cur = c.current ? 'https://www.google.com/maps?q=' + c.current.lat + ',' + c.current.lng : '';
+    return '<div class="item" style="align-items:flex-start;flex-wrap:wrap"><div class="grow" style="min-width:220px">' +
+      (c.found ? '<b>' + esc(c.property) + '</b> <span class="muted">' + esc(c.locationId) + ' · check-in ' + esc(c.checkIn) + (c.supervisor ? ' · ' + esc(c.supervisor) : '') + '</span>' + (c.address ? '<div class="small">' + esc(c.address) + '</div>' : '')
+        : '<b>' + esc(c.locationName || c.locationId) + '</b> <span class="muted">' + esc(c.locationId) + '</span>') +
+      '<div class="small">' + esc(c.by || 'Someone') + ' · ' + esc(c.at && c.at.date ? c.at.date + (c.at.time ? ' ' + c.at.time : '') : c.date) + ' says the location is wrong' + (c.meters !== null ? ' (about ' + esc(c.meters) + ' m from the saved point)' : '') + '.</div>' +
+      (c.reason ? '<div class="small">"' + esc(c.reason) + '"</div>' : '') +
+      (c.found ? '<div class="small">Link now: ' + (c.currentLink ? '<a href="' + esc(c.currentLink) + '" target="_blank" rel="noopener">' + esc(short(c.currentLink)) + '</a>' : '<span class="muted">none</span>') + '</div>' : '') +
+      '<div class="small">New link: ' + (c.link ? '<a href="' + esc(c.link) + '" target="_blank" rel="noopener">' + esc(short(c.link)) + '</a>' : '<span class="muted">none given</span>') + (cur ? ' · <a href="' + esc(cur) + '" target="_blank" rel="noopener">saved point on the map</a>' : '') + '</div>' +
+      (can ? '<div class="small muted">Approve changes the link of this one check-in only.' + (c.sameLater ? ' ' + c.sameLater + ' later check-in' + (c.sameLater > 1 ? 's' : '') + ' of the same place (same name and address) are not changed for now.' : '') + (c.askedBefore ? ' This place has been challenged ' + c.askedBefore + ' other time' + (c.askedBefore > 1 ? 's' : '') + '.' : '') + '</div>'
+        : '<div class="small" style="color:var(--bad)">' + esc(c.why || 'This challenge has no usable link.') + ' You can Reject it.</div>') +
+      '</div><div class="row" style="gap:8px"><button class="btn small" data-chal-ok="' + esc(c.id) + '" data-expect="' + esc(c.currentLink || '') + '"' + (can ? '' : ' disabled') + '>Approve</button><button class="btn secondary small" data-chal-no="' + esc(c.id) + '">Reject</button></div></div>';
+  }).join('') + '</div>';
+}
+
 VIEWS.manage = function () {
   return swr('managerOverview', {}, function (m) {
     const T = m.tables;
@@ -2193,7 +2214,7 @@ VIEWS.manage = function () {
     const log = m.log.length ? m.log.map(function (c) {
       return '<div class="small" style="padding:6px 0;border-bottom:1px solid var(--line)"><b>' + esc(c.by) + '</b> · ' + fmt(c.at) + '<div>' + esc(c.tab) + ' ' + esc(c.key) + ' · ' + esc(c.field) + ': ' + (c.action === 'ADD' ? 'added ' + esc(c.newValue) : c.action === 'REMOVE' ? 'removed ' + esc(c.oldValue) : esc(c.oldValue || '(empty)') + ' → ' + esc(c.newValue || '(empty)')) + '</div></div>';
     }).join('') : '<div class="small muted">No changes yet.</div>';
-    $('view').innerHTML =
+    $('view').innerHTML = manageChallengesHtml(m) +
       '<div class="card"><h2 style="margin:0">Manage</h2><p class="small muted" style="margin:6px 0 10px">Change the setup of the app here instead of in the spreadsheet. Every change is recorded.</p>' +
       '<h3 style="margin:0 0 6px">' + (issues ? issues + ' thing' + (issues > 1 ? 's' : '') + ' to look at' : 'Health check') + '</h3>' + health + '</div>' +
       '<div class="card">' +
@@ -2211,6 +2232,17 @@ VIEWS.manage = function () {
       '</div>';
     const view = $('view');
     view.querySelectorAll('details[data-sec]').forEach(function (d) { d.addEventListener('toggle', function () { manageOpen[d.dataset.sec] = d.open; }); });
+    view.querySelectorAll('[data-chal-ok],[data-chal-no]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        const approve = b.dataset.chalOk !== undefined, id = approve ? b.dataset.chalOk : b.dataset.chalNo;
+        busy(b, function () {
+          return callBackend('managerDecideChallenge', { challengeId: id, decision: approve ? 'APPROVE' : 'REJECT', expectedLink: approve ? b.dataset.expect : undefined }).then(function (r) {
+            toast(approve ? (r.changed ? 'Link changed for ' + (r.property || 'the property') : 'That check-in already had this link') : 'Challenge rejected');
+            go('manage', true);
+          });
+        });
+      });
+    });
     view.querySelectorAll('[data-madd]').forEach(function (b) { b.addEventListener('click', function () { manageOpenForm(m, T[b.dataset.madd], null); }); });
     view.querySelectorAll('[data-medit]').forEach(function (b) { b.addEventListener('click', function () { const t = T[b.dataset.medit]; manageOpenForm(m, t, t.rows.find(function (r) { return r.key === b.dataset.key; })); }); });
     const og = $('optGroup');
