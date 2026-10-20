@@ -1359,6 +1359,7 @@ function transferCard(t) {
   }).join('') + '</div>';
   if (t.note) html += '<div class="small">Note: ' + esc(t.note) + '</div>';
   if (t.tech) return html + '<div class="small muted" style="margin-top:6px">Tracked in Issues' + (t.override ? ' · marked by the office' : '') + '. ' + (t.status === 'IN_TRANSIT' ? 'Waiting for ' + esc(t.to) + ' to confirm. ' : '') + '<button class="assetlink" data-go="issues">Follow it in Issues</button></div></div>';
+  if (t.atOffice && t.totalItems > t.items.length) html += '<div class="small muted">Showing only what is still waiting. The other ' + (t.totalItems - t.items.length) + ' of this transfer are in History' + (me.role === 'ADMIN' ? ' (or In the Office, if they are still being processed)' : '') + '.</div>';
   if (t.atOffice && me.role === 'ADMIN') {
     const todo = t.items.filter(function (i) { return i.faulty && (i.stage === 'OFFICE' || i.stage === 'REVIEW'); });
     if (todo.length) html += '<div class="banner info" style="margin-top:10px"><div class="grow"><b>What next for the faulty devices?</b>' + todo.map(function (i) { return '<div style="margin-top:8px"><div class="small"><b>' + esc(i.assetId) + '</b> · ' + esc(i.issueType) + ' ' + pill(i.stage === 'REVIEW' ? 'under review' : 'at office', 'info') + '</div>' + flowButtons({ issueId: i.issueId, assetId: i.assetId, stage: i.stage, handoverId: '' }) + '</div>'; }).join('') + '</div></div>';
