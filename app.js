@@ -73,7 +73,7 @@ function catPrefix(c) { return c === 'DEVICE' ? '' : catLabel(c) + ' '; }
 // ===================== TRANSPORT =====================
 
 // Actions that only read. Everything else is a save, which wipes the screen memo below.
-const READS = { officeStock: 1, checkinList: 1, managerOverview: 1, saveLocation: 1, stays: 1, home: 1, picker: 1, search: 1, issues: 1, flags: 1, notifications: 1, supervisors: 1, properties: 1, supervisorList: 1, team: 1, assignments: 1, report: 1, options: 1, transfers: 1, transferHistory: 1, officeBatches: 1, invoices: 1, invoiceCheckins: 1, pulse: 1, photoGet: 1, sync: 1 };
+const READS = { officeStock: 1, checkinList: 1, managerOverview: 1, saveLocation: 1, stays: 1, home: 1, picker: 1, search: 1, issues: 1, flags: 1, notifications: 1, supervisors: 1, properties: 1, supervisorList: 1, team: 1, assignments: 1, report: 1, options: 1, transfers: 1, transferHistory: 1, officeBatches: 1, invoices: 1, invoiceCheckins: 1, techDesk: 1, issueStory: 1, pulse: 1, photoGet: 1, sync: 1 };
 const NO_MEMO = { saveLocation: 1, search: 1, report: 1, photoGet: 1, pulse: 1, sync: 1, notifications: 1 };
 let memo = {};          // last answer for each read, so a screen can be drawn instantly while a fresh answer loads
 let memoEpoch = 0;      // bumped by every save, so an answer that was in flight during a save is not remembered
@@ -642,7 +642,7 @@ function startTab() {
   let last = '';
   try { last = localStorage.getItem('at_tab_' + me.role) || ''; } catch (e) { /* ignore */ }
   const ok = TABS[me.role].some(function (t) { return t[0] === last; });
-  return ok ? last : (me.role === 'SUPERVISOR' ? 'home' : me.role === 'MANAGER' ? 'manage' : 'dash');
+  return ok ? last : (me.role === 'SUPERVISOR' ? 'home' : me.role === 'MANAGER' ? 'manage' : me.role === 'TECH' ? 'techdesk' : 'dash');
 }
 
 /** Warm the screens people open next, in the background, one at a time, so the tab switch is instant. */
@@ -693,7 +693,7 @@ function poll() {
     lastStamp = p.stamp;
     if (changed) {
       memo = {};
-      if (['home', 'dash', 'transfers', 'team', 'flags', 'issues'].indexOf(tab) !== -1 && !userIsBusy()) go(tab, true);
+      if (['home', 'dash', 'transfers', 'team', 'flags', 'issues', 'techdesk'].indexOf(tab) !== -1 && !userIsBusy()) go(tab, true);
     }
     if (++pulseCount % 3 === 0) backgroundSync();
   }).catch(function () { /* transient */ });
@@ -704,9 +704,10 @@ document.addEventListener('visibilitychange', function () { if (!document.hidden
 
 const TABS = {
   SUPERVISOR: [['home', 'Home'], ['team', 'Assign'], ['transfers', 'Transfers'], ['invoices', 'Invoices'], ['issue', 'Report issue'], ['search', 'Search']],
-  ADMIN: [['dash', 'Dashboard'], ['schedule', 'Schedule'], ['transfers', 'Transfers'], ['invoices', 'Invoices'], ['flags', 'Needs attention'], ['issues', 'Issues'], ['assets', 'Assets'], ['sups', 'Supervisors'], ['search', 'Search'], ['reports', 'Reports']],
-  OPS: [['dash', 'Dashboard'], ['schedule', 'Schedule'], ['flags', 'Needs attention'], ['issues', 'Issues'], ['search', 'Search'], ['reports', 'Reports']],
-  MANAGER: [['manage', 'Manage']]
+  ADMIN: [['dash', 'Dashboard'], ['schedule', 'Schedule'], ['transfers', 'Transfers'], ['invoices', 'Invoices'], ['flags', 'Needs attention'], ['issues', 'Issues'], ['techdesk', 'Tech team'], ['assets', 'Assets'], ['sups', 'Supervisors'], ['search', 'Search'], ['reports', 'Reports']],
+  OPS: [['dash', 'Dashboard'], ['schedule', 'Schedule'], ['flags', 'Needs attention'], ['issues', 'Issues'], ['techdesk', 'Tech team'], ['search', 'Search'], ['reports', 'Reports']],
+  MANAGER: [['manage', 'Manage']],
+  TECH: [['techdesk', 'Tech desk']]
 };
 const PARENT_TAB = { office: 'dash', newTransfer: 'transfers', invoiceNew: 'invoices', checkin: 'home', alerts: null, help: null, property: 'dash' };
 
@@ -1345,16 +1346,23 @@ function canReceive(t) {
 function transferCard(t) {
   const short = t.items.filter(function (i) { return i.status === 'SHORT'; });
   const statusPill = t.status === 'IN_TRANSIT' ? pill('In transit', 'info') : t.status === 'PARTIAL' ? pill('SHORT RECEIPT', 'bad') : t.status === 'RECEIVED' ? pill('Received', 'ok') : pill(t.status, '');
-  let html = '<div class="card' + (t.status === 'PARTIAL' ? ' flag HIGH' : '') + '"><div class="row spread"><div><b>' + esc(t.id) + '</b> · ' + esc(t.from) + ' → ' + esc(t.to) +
-    '<div class="small muted">' + esc(t.fromLocation) + ' · sent ' + fmt(t.createdAt) + ' by ' + esc(t.sentBy) + (t.receivedAt ? ' · received ' + fmt(t.receivedAt) + ' by ' + esc(t.receivedBy) : '') + '</div></div>' + statusPill + '</div>';
+  let html = '<div class="card' + (t.status === 'PARTIAL' ? ' flag HIGH' : t.faulty ? ' faultyCard' : '') + '"><div class="row spread"><div><b>' + esc(t.id) + '</b> · ' + esc(t.from) + ' → ' + esc(t.to) +
+    '<div class="small muted">' + (t.fromLocation ? esc(t.fromLocation) + ' · ' : '') + 'sent ' + fmt(t.createdAt) + ' by ' + esc(t.sentBy) + (t.receivedAt ? ' · received ' + fmt(t.receivedAt) + ' by ' + esc(t.receivedBy) : '') + '</div></div><div class="row" style="gap:4px;flex-wrap:wrap;justify-content:flex-end">' + (t.tech ? pill('Tracked in Issues', 'info') : '') + (t.faulty ? pill('Faulty devices', 'bad') : '') + statusPill + '</div></div>';
   if (short.length) {
     html += '<div class="banner bad" style="margin-top:10px"><div class="grow"><b>Not received (' + short.length + ' of ' + t.items.length + '):</b> ' + short.map(function (i) { return esc(i.assetId); }).join(', ') +
       '<div class="small">Still recorded with the sender until an admin resolves it.</div></div></div>';
   }
   html += '<div class="chips">' + t.items.map(function (i) {
-    return '<span class="chip"' + (i.status === 'SHORT' ? ' style="background:var(--bad-bg);color:var(--bad)"' : i.status === 'RECEIVED' ? ' style="background:var(--ok-bg);color:var(--ok)"' : '') + '>' + esc(i.assetId) + '</span>';
+    if (i.faulty) return '<span class="chip" style="background:var(--bad-bg);color:var(--bad);font-weight:600">⚠ ' + esc(i.assetId) + ' · ' + esc(i.issueType) + '</span>';
+    if (i.repaired) return '<span class="chip" style="background:var(--ok-bg);color:var(--ok);font-weight:600">✓ ' + esc(i.assetId) + ' · repaired</span>';
+    return '<span class="chip"' + (i.status === 'SHORT' ? ' style="background:var(--bad-bg);color:var(--bad)"' : i.status === 'RECEIVED' ? ' style="background:var(--ok-bg);color:var(--ok)"' : '') + '>' + esc(i.assetId) + (i.had ? ' <span class="small muted">· had: ' + esc(i.had) + '</span>' : '') + '</span>';
   }).join('') + '</div>';
   if (t.note) html += '<div class="small">Note: ' + esc(t.note) + '</div>';
+  if (t.tech) return html + '<div class="small muted" style="margin-top:6px">Tracked in Issues' + (t.override ? ' · marked by the office' : '') + '. ' + (t.status === 'IN_TRANSIT' ? 'Waiting for ' + esc(t.to) + ' to confirm. ' : '') + '<button class="assetlink" data-go="issues">Follow it in Issues</button></div></div>';
+  if (t.atOffice && me.role === 'ADMIN') {
+    const todo = t.items.filter(function (i) { return i.faulty && (i.stage === 'OFFICE' || i.stage === 'REVIEW'); });
+    if (todo.length) html += '<div class="banner info" style="margin-top:10px"><div class="grow"><b>What next for the faulty devices?</b>' + todo.map(function (i) { return '<div style="margin-top:8px"><div class="small"><b>' + esc(i.assetId) + '</b> · ' + esc(i.issueType) + ' ' + pill(i.stage === 'REVIEW' ? 'under review' : 'at office', 'info') + '</div>' + flowButtons({ issueId: i.issueId, assetId: i.assetId, stage: i.stage, handoverId: '' }) + '</div>'; }).join('') + '</div></div>';
+  }
   html += '<div class="row" style="margin-top:8px">';
   if (t.status === 'IN_TRANSIT' && canReceive(t)) html += '<button class="btn small" data-receive="' + esc(t.id) + '">Confirm receipt</button>';
   else if (t.status === 'IN_TRANSIT') html += '<span class="small muted">Waiting for ' + esc(t.to) + ' to confirm</span>';
@@ -1372,13 +1380,16 @@ function transferCard(t) {
 
 let currentTransfers = [];
 VIEWS.transfers = function () {
+  officeMode = 'normal';
   return swr('transfers', {}, function (list) {
     currentTransfers = list;
+    const atOffice = me.role === 'SUPERVISOR' ? [] : list.filter(function (t) { return t.atOffice; });
     const mineIncoming = list.filter(function (t) { return t.status === 'IN_TRANSIT' && canReceive(t); });
-    const rest = list.filter(function (t) { return mineIncoming.indexOf(t) === -1; });
+    const rest = list.filter(function (t) { return mineIncoming.indexOf(t) === -1 && atOffice.indexOf(t) === -1; });
     let html = '<div class="stickyHead flat"><div class="row spread"><h2 style="margin:0">Transfers</h2><button class="btn" data-act="send">' +
       (me.role === 'ADMIN' ? 'Dispatch to supervisor' : 'Send assets') + '</button></div></div>';
     if (me.role === 'ADMIN') html += '<div id="officeBatches"></div>';
+    if (atOffice.length) html += '<h3>Received faulty devices: decide what next</h3>' + atOffice.map(transferCard).join('');
     if (mineIncoming.length) html += '<h3>' + (me.role === 'ADMIN' ? 'In transit - waiting for you to confirm' : 'Coming to you') + '</h3>' + mineIncoming.map(transferCard).join('');
     if (rest.length) html += '<h3>' + (me.role === 'SUPERVISOR' ? 'Sent by you / recently received' : 'Other open transfers') + '</h3>' + rest.map(transferCard).join('');
     if (!list.length) html += '<div class="card">' + emptyState('Nothing in transit.') + '</div>';
@@ -1398,7 +1409,7 @@ VIEWS.transfers = function () {
 
 // ---- In the Office: what a supervisor sent in is received, (SD cards) uploaded, then sent back or kept ----
 const OFFICE_STEPS = ['RECEIVED', 'UPLOADING', 'UPLOADED'];
-let officeData = null, officeSup = [], batchSel = {};   // batchSel[batchId][assetId] = ticked
+let officeData = null, officeSup = [], batchSel = {}, officeMode = 'normal';   // officeMode: 'normal' = Transfers tab, 'repair' = devices back from repair, worked in the Issues tab   // batchSel[batchId][assetId] = ticked
 function officeAgo(iso) {
   const m = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
   return m < 1 ? 'just now' : m < 60 ? m + ' min ago' : Math.floor(m / 60) + ' h ' + (m % 60) + ' min ago';
@@ -1457,11 +1468,12 @@ function officeGroup(b, items, isSd) {
 }
 function paintOffice() {
   const host = $('officeBatches'); if (!host || !officeData) return;
-  if (!officeData.batches.length) { host.innerHTML = ''; return; }
-  host.innerHTML = '<h3>In the Office</h3>' + officeData.batches.map(function (b) {
+  const shown = officeData.batches.filter(function (b) { return officeMode === 'repair' ? b.repair : !b.repair; });
+  if (!shown.length) { host.innerHTML = ''; return; }
+  host.innerHTML = '<h3>' + (officeMode === 'repair' ? 'Back from repair: send back or keep' : 'In the Office') + '</h3>' + shown.map(function (b) {
     const sd = b.items.filter(function (i) { return i.usesUpload; }), other = b.items.filter(function (i) { return !i.usesUpload; });
-    return '<div class="card"><div class="row spread"><div><b>' + esc(b.id) + '</b> · from ' + esc(b.from || '-') +
-      '<div class="small muted">received ' + fmt(b.receivedAt) + ' by ' + esc(b.receivedBy) + '</div></div>' + pill(b.items.length + ' in Office', 'info') + '</div>' +
+    return '<div class="card"><div class="row spread"><div><b>' + (b.repair ? esc(b.items.map(function (i) { return i.id; }).join(', ')) : esc(b.id)) + '</b> · ' + (b.repair ? 'reported by ' : 'from ') + esc(b.from || '-') +
+      '<div class="small muted">' + (b.repair ? 'resolved ' + fmt(b.receivedAt) + ' by ' + esc(b.receivedBy) + ' · was: ' + esc(b.issueType) : 'received ' + fmt(b.receivedAt) + ' by ' + esc(b.receivedBy)) + '</div></div>' + pill(b.repair ? 'resolved' : b.items.length + ' in Office', b.repair ? 'ok' : 'info') + '</div>' +
       (sd.length ? officeGroup(b, sd, true) : '') + (other.length ? officeGroup(b, other, false) : '') + '</div>';
   }).join('');
   const batchOf = function (id) { return officeData.batches.find(function (x) { return x.id === id; }); };
@@ -1671,46 +1683,66 @@ function groupIssues(list) {
     const k = i.type + '|' + (open ? i.status : 'CLOSED');
     let ln = c.byKey[k];
     if (!ln) { ln = c.byKey[k] = { type: i.type, status: i.status, open: open, ids: [], by: [], at: i.at, descriptions: [], photos: [], resolution: i.resolution, count: 0 }; c.lines.push(ln); }
-    ln.count++; ln.ids.push(i.id);
+    ln.count++; ln.ids.push(i.id); if (i.canSend) ln.canSend = true;
+    if (!ln.flowAt || i.at >= ln.flowAt) { ln.flowAt = i.at; ln.issueId = i.id; ln.stage = i.stage; ln.stageLabel = i.stageLabel; ln.where = i.where; ln.days = i.days; ln.since = i.since; ln.handoverId = i.handoverId; }
     if (ln.by.indexOf(i.by) === -1) ln.by.push(i.by);
     if (i.at > ln.at) ln.at = i.at;
     if (i.description && ln.descriptions.indexOf(i.description) === -1) ln.descriptions.push(i.description);
     if (i.photoFileId) ln.photos.push(i.photoFileId); else if (i.photoState) ln.photoState = (ln.photoState === 'MISSING' || i.photoState === 'MISSING') ? 'MISSING' : 'PENDING';
   });
-  cards.forEach(function (c) { c.lines.sort(function (a, b) { return (b.open - a.open) || (a.at < b.at ? 1 : -1); }); c.openIds = []; c.lines.forEach(function (l) { if (l.open) l.ids.forEach(function (id) { c.openIds.push(id); }); }); });
-  return cards.sort(function (a, b) { return (b.openIds.length > 0) - (a.openIds.length > 0) || (a.latest < b.latest ? 1 : -1); });
+  cards.forEach(function (c) {
+    c.lines.sort(function (a, b) { return (b.open - a.open) || (a.at < b.at ? 1 : -1); });
+    c.openIds = []; c.lines.forEach(function (l) { if (l.open) l.ids.forEach(function (id) { c.openIds.push(id); }); });
+    c.since = c.lines.filter(function (l) { return l.open; }).reduce(function (m, l) { return l.since > m ? l.since : m; }, '') || c.latest;
+  });
+  // the device you just worked on goes to the top (open ones first, newest step first)
+  return cards.sort(function (a, b) { return (b.openIds.length > 0) - (a.openIds.length > 0) || (a.since < b.since ? 1 : -1); });
 }
 
 function issueCard(c, selectable) {
-  const openLines = c.lines.filter(function (l) { return l.open; });
-  return '<div class="card issueCard"><div class="row spread" style="align-items:flex-start">' +
+  const openLines = c.lines.filter(function (l) { return l.open; }), top = openLines[0];
+  return '<div class="card issueCard' + (openLines.length ? ' faultyCard' : '') + '"><div class="row spread" style="align-items:flex-start">' +
     (selectable && c.openIds.length ? '<label class="selbox"><input type="checkbox" data-csel="' + esc(c.assetId) + '" data-ids="' + esc(c.openIds.join(',')) + '"></label>' : '') +
     '<div class="grow"><div class="t" style="font-size:16px"><a href="#" data-asset="' + esc(c.assetId) + '">' + esc(c.assetId) + '</a></div><div class="small muted">' + esc(c.location) + '</div></div>' +
-    (openLines.length ? pill(openLines.length + (openLines.length > 1 ? ' problems open' : ' problem open'), 'warn') : pill('closed', 'ok')) + '</div>' +
+    '<div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">' + (openLines.length ? (openLines.length > 1 ? pill(openLines.length + ' problems open', 'warn') : '') + (top && top.stage ? stagePill(top.stage, top.stageLabel) + agingPill(top) : pill('open', 'warn')) : pill('closed', 'ok')) + '</div></div>' +
     c.lines.map(function (l) {
       return '<div class="issueLine' + (l.open ? '' : ' closed') + '"><div class="row spread" style="align-items:flex-start"><div class="grow"><b>' + esc(l.type) + '</b>' +
         (l.count > 1 ? ' <span class="pill info">' + l.count + ' reports</span>' : '') +
         '<div class="small muted">' + esc(l.by.join(', ')) + ' · latest ' + fmt(l.at) + '</div>' +
         l.descriptions.slice(0, 3).map(function (d) { return '<div class="small">“' + esc(d) + '”</div>'; }).join('') +
         (l.resolution ? '<div class="small muted">Resolution: ' + esc(l.resolution) + '</div>' : '') +
-        (!l.photos.length && l.photoState === 'PENDING' ? '<div class="small muted">Photo on its way…</div>' : '') + (!l.photos.length && l.photoState === 'MISSING' ? '<div style="margin-top:6px">' + pill('Photo missing (upload failed)', 'warn') + '</div>' : '') +
-        (l.photos.length ? '<div class="row" style="margin-top:6px">' + l.photos.slice(0, 3).map(function (p, n) { return '<button class="btn secondary small" data-photo="' + esc(p) + '">Photo ' + (n + 1) + '</button>'; }).join('') + '</div>' : '') + '</div>' +
-        pill(l.status.replace('_', ' ').toLowerCase(), !l.open ? 'ok' : l.status === 'UNDER_REVIEW' ? 'info' : 'warn') + '</div></div>';
+        (l.open && l.where ? '<div class="small" style="margin-top:4px">Now: <b>' + esc(l.where) + '</b></div>' : '') +
+        (!l.photos.length && l.photoState === 'PENDING' ? '<div class="small muted">Photo on its way…</div>' : '') + (!l.photos.length && l.photoState === 'MISSING' ? '<div style="margin-top:6px">' + pill('Photo missing (upload failed)', 'warn') + '</div>' :
+        (l.photos.length ? '<div class="row" style="margin-top:6px">' + l.photos.slice(0, 3).map(function (p, n) { return '<button class="btn secondary small" data-photo="' + esc(p) + '">Photo ' + (n + 1) + '</button>'; }).join('') + '</div>' : '')) +
+        (l.canSend ? '<div style="margin-top:6px"><button class="btn small" data-send-for="' + esc(c.assetId) + '">Send to office</button></div>' : '') +
+        (l.open && me.role === 'ADMIN' && l.stage ? flowButtons({ issueId: l.issueId, assetId: c.assetId, stage: l.stage, handoverId: l.handoverId }) : '') +
+        storyToggle(l.issueId || l.ids[0]) + '</div>' +
+        (l.open ? '' : pill(l.status.replace('_', ' ').toLowerCase(), 'ok')) + '</div></div>';
     }).join('') + '</div>';
 }
 
+let issueFilter = 'ALL';
+const ISSUE_GROUPS = [['ALL', 'All open'], ['SITE', 'At site'], ['MOVE', 'On the way'], ['OFFICE', 'At office'], ['TECH', 'Product team'], ['BACK', 'Back'], ['DONE', 'Resolved']];
+function issueGroupOf(stage) { return { SITE: 'SITE', TO_OFFICE: 'MOVE', BACK_WAY: 'MOVE', OFFICE: 'OFFICE', REVIEW: 'OFFICE', TO_TECH: 'TECH', TECH: 'TECH', BACK: 'BACK', DONE: 'DONE' }[stage] || 'OFFICE'; }
+
 VIEWS.issues = function () {
-  const openOnly = $('issueOpenOnly') ? $('issueOpenOnly').checked : true;
-  return swr('issues', { openOnly: openOnly }, function (list) {
+  const showDone = issueFilter === 'DONE';
+  return swr('issues', { openOnly: !showDone }, function (all) {
     const sel = new Set();
     const isAdmin = me.role === 'ADMIN';
+    const counts = {}; ISSUE_GROUPS.forEach(function (g) { counts[g[0]] = 0; });
+    all.forEach(function (i) { if (i.stage === 'DONE') return; counts.ALL++; counts[issueGroupOf(i.stage)]++; });
+    const list = all.filter(function (i) { return issueFilter === 'ALL' ? i.stage !== 'DONE' : issueGroupOf(i.stage) === issueFilter; });
     const cards = groupIssues(list);
-    $('view').innerHTML = '<div class="stickyHead flat"><div class="row spread"><h2 style="margin:0">Issues <span class="muted" style="font-weight:400">(' + cards.length + ' device' + (cards.length === 1 ? '' : 's') + ')</span></h2><div class="row">' + (isAdmin ? '<button class="linkBtn" id="issSelAll">Select all open</button>' : '') +
-      '<label class="small"><input type="checkbox" id="issueOpenOnly"' + (openOnly ? ' checked' : '') + '> Open only</label></div></div></div>' +
-      (isAdmin ? '<p class="small muted">One card per device. Tick a device to deal with all its open problems at once.</p>' : '') +
-      (cards.length ? cards.map(function (c) { return issueCard(c, isAdmin); }).join('') : '<div class="card">' + emptyState('No issues.') + '</div>');
-    $('issueOpenOnly').addEventListener('change', function () { go('issues', true); });
+    $('view').innerHTML = '<div class="stickyHead flat"><div class="row spread"><h2 style="margin:0">' + (isAdmin ? 'Issues' : 'Your issues') + ' <span class="muted" style="font-weight:400">(' + cards.length + ' device' + (cards.length === 1 ? '' : 's') + ')</span></h2><div class="row">' + (isAdmin ? '<button class="linkBtn" id="issSelAll">Select all open</button>' : '') + '</div></div>' +
+      '<div class="row" style="gap:6px;flex-wrap:wrap;margin-top:8px">' + ISSUE_GROUPS.map(function (g) {
+        return '<button class="btn ' + (issueFilter === g[0] ? '' : 'secondary ') + 'small" data-ifilter="' + g[0] + '">' + g[1] + (g[0] === 'DONE' ? '' : ' ' + counts[g[0]]) + '</button>';
+      }).join('') + '</div></div>' +
+      (isAdmin ? '<div id="officeBatches"></div><p class="small muted">One card per device, the one you just worked on first. Tick a device to deal with all its open problems at once.</p>' : '') +
+      (cards.length ? cards.map(function (c) { return issueCard(c, isAdmin); }).join('') : '<div class="card">' + emptyState('No issues here.') + '</div>');
+    $('view').querySelectorAll('[data-ifilter]').forEach(function (b) { b.addEventListener('click', function () { issueFilter = b.dataset.ifilter; go('issues', true); }); });
     if (!isAdmin) return;
+    officeMode = 'repair'; loadOffice();   // devices whose issue is resolved and are back at the Office: send back or keep
     const updateBar = function () { $('barCount') && ($('barCount').textContent = sel.size + ' issue(s) selected'); barShow(sel.size > 0); };
     const apply = function (status) {
       callBackend('updateIssues', { issueIds: Array.from(sel), status: status, resolution: $('barNote').value }).then(function (r) { toast(r.updated + ' issue(s) updated'); go('issues', true); }).catch(toastError);
@@ -1724,9 +1756,17 @@ VIEWS.issues = function () {
     document.querySelectorAll('[data-csel]').forEach(function (c) {
       c.addEventListener('change', function () { c.dataset.ids.split(',').forEach(function (id) { if (c.checked) sel.add(id); else sel.delete(id); }); updateBar(); });
     });
-    $('issSelAll').addEventListener('click', function () { document.querySelectorAll('[data-csel]').forEach(function (c) { c.checked = true; c.dataset.ids.split(',').forEach(function (id) { sel.add(id); }); }); updateBar(); });
+    const all2 = $('issSelAll'); if (all2) all2.addEventListener('click', function () { document.querySelectorAll('[data-csel]').forEach(function (c) { c.checked = true; c.dataset.ids.split(',').forEach(function (id) { sel.add(id); }); }); updateBar(); });
   });
 };
+
+/** Right after a report: the faulty devices can go to the office in one more tap (the send screen opens with them already ticked). */
+function offerSendToOffice(ids) {
+  openModal('<h2>Send to the office now?</h2><p class="small muted">' + ids.map(esc).join(', ') + (ids.length > 1 ? ' have' : ' has') + ' stopped working. The office needs to check ' + (ids.length > 1 ? 'them' : 'it') + '.</p>' +
+    '<button class="btn" id="soNow" style="width:100%">Send to office now</button><div class="row" style="margin-top:8px"><button class="btn secondary" data-close style="width:100%">Later</button></div>', function (box) {
+    box.querySelector('#soNow').addEventListener('click', function () { closeModal(); go('newTransfer', false, ids); });
+  });
+}
 
 VIEWS.issue = function (preset) {
   const pre = Array.isArray(preset) ? preset : (preset ? [preset] : []);
@@ -1781,7 +1821,13 @@ VIEWS.issue = function (preset) {
           const dup = (r.duplicates || []).length;
           if (!r.count) { toast('Already reported. Nothing new was sent' + (dup ? ' (' + r.duplicates.map(function (d) { return d.assetId; }).join(', ') + ').' : '.'), true); go(me.role === 'SUPERVISOR' ? 'home' : 'issues'); return; }
           toast(r.count + ' issue(s) reported' + (dup ? '. ' + dup + ' already reported, skipped.' : ''));
+          const dupIds = (r.duplicates || []).map(function (d) { return d.assetId; });
+          const sendable = me.role !== 'SUPERVISOR' ? [] : ids.filter(function (id) {   // the ones that stop working (not the minor ones), and not already reported
+            const a = byId[id], k = a && (OPTS.issueTypes[a.c] || []).find(function (x) { return x.value === typeByCategory[a.c]; });
+            return k && k.effect === 'DISABLES' && dupIds.indexOf(id) === -1;
+          });
           go(me.role === 'SUPERVISOR' ? 'home' : 'issues');
+          if (sendable.length) offerSendToOffice(sendable);
         });
       });
     });
@@ -1842,9 +1888,13 @@ function renderDetail(d) {
   html += '<div class="card"><h2>Movement history</h2>' + (d.movements.length ? '<ul class="timeline">' + d.movements.map(function (m) {
     return '<li><b>' + esc(m.reason.replace(/_/g, ' ').toLowerCase()) + '</b> · ' + fmt(m.at) + '<div class="small muted">' + esc(m.from) + ' → ' + esc(m.to) + (m.ref ? ' · ' + esc(m.ref) : '') + ' · by ' + esc(m.by) + '</div></li>';
   }).join('') + '</ul>' : emptyState('No movements yet.')) + '</div>';
-  html += '<div class="card"><h2>Issues</h2>' + (d.issues.length ? d.issues.map(function (i) {
-    return '<div class="item"><div class="grow"><div class="t">' + esc(i.type) + '</div><div class="small muted">' + fmt(i.at) + ' · ' + esc(i.by) + '</div>' + (i.description ? '<div class="small">' + esc(i.description) + '</div>' : '') +
-      (i.photoFileId ? '<button class="btn secondary small" data-photo="' + esc(i.photoFileId) + '">View photo</button>' : (i.photoState === 'PENDING' ? '<div class="small muted">Photo on its way…</div>' : (i.photoState === 'MISSING' ? pill('Photo missing (upload failed)', 'warn') : ''))) + '</div>' + pill(i.status.toLowerCase().replace('_', ' '), i.status === 'OPEN' ? 'warn' : 'ok') + '</div>';
+  const sum = d.issueSummary || { count: d.issues.length, open: 0, daysOut: 0 };
+  html += '<div class="card"><h2>Issue history</h2>' + (d.issues.length ? '<div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:6px">' + pill(sum.count + (sum.count === 1 ? ' issue' : ' issues') + ' so far', sum.count > 2 ? 'warn' : 'info') + pill(sum.daysOut + ' days out of service in total', sum.daysOut > 7 ? 'warn' : 'info') + (sum.open ? pill(sum.open + ' open', 'bad') : '') + '</div>' + d.issues.map(function (i) {
+    const open = i.status === 'OPEN' || i.status === 'UNDER_REVIEW';
+    return '<div class="issueLine' + (open ? '' : ' closed') + '"><div class="row spread" style="align-items:flex-start"><div class="grow"><b>' + esc(i.type) + '</b><div class="small muted">' + esc(i.id) + ' · reported ' + fmt(i.at) + ' by ' + esc(i.by) + (i.closedAt ? ' · closed ' + fmt(i.closedAt) : '') + ' · ' + i.days + ' days</div>' + (i.description ? '<div class="small">“' + esc(i.description) + '”</div>' : '') +
+      (i.resolution ? '<div class="small muted">Resolution: ' + esc(i.resolution) + '</div>' : '') +
+      (i.photoFileId ? '<button class="btn secondary small" data-photo="' + esc(i.photoFileId) + '">View photo</button>' : (i.photoState === 'PENDING' ? '<div class="small muted">Photo on its way…</div>' : (i.photoState === 'MISSING' ? pill('Photo missing (upload failed)', 'warn') : ''))) + '</div>' + pill(i.status.toLowerCase().replace('_', ' '), open ? (i.status === 'OPEN' ? 'warn' : 'info') : 'ok') + '</div>' +
+      (i.story && i.story.length ? '<ul class="timeline">' + i.story.map(function (e) { return '<li><b>' + esc(e.text) + '</b> · ' + fmt(e.at) + '<div class="small muted">' + (e.by ? 'by ' + esc(e.by) : '') + (e.note ? (e.by ? ' · ' : '') + esc(e.note) : '') + '</div></li>'; }).join('') + '</ul>' : '') + '</div>';
   }).join('') : emptyState('No issues recorded.')) + '</div>';
   $('detail').innerHTML = html;
 }
