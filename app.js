@@ -704,8 +704,8 @@ document.addEventListener('visibilitychange', function () { if (!document.hidden
 
 const TABS = {
   SUPERVISOR: [['home', 'Home'], ['team', 'Assign'], ['transfers', 'Transfers'], ['invoices', 'Invoices'], ['issue', 'Report issue'], ['search', 'Search']],
-  ADMIN: [['dash', 'Dashboard'], ['schedule', 'Schedule'], ['transfers', 'Transfers'], ['invoices', 'Invoices'], ['flags', 'Needs attention'], ['issues', 'Issues'], ['techdesk', 'Tech team'], ['assets', 'Assets'], ['sups', 'Supervisors'], ['search', 'Search'], ['reports', 'Reports']],
-  OPS: [['dash', 'Dashboard'], ['schedule', 'Schedule'], ['flags', 'Needs attention'], ['issues', 'Issues'], ['techdesk', 'Tech team'], ['search', 'Search'], ['reports', 'Reports']],
+  ADMIN: [['dash', 'Dashboard'], ['transfers', 'Transfers'], ['issues', 'Issues'], ['assets', 'Assets'], ['flags', 'Needs attention'], ['schedule', 'Schedule'], ['invoices', 'Invoices'], ['techdesk', 'Tech team'], ['sups', 'Supervisors'], ['search', 'Search'], ['reports', 'Reports']],
+  OPS: [['dash', 'Dashboard'], ['issues', 'Issues'], ['flags', 'Needs attention'], ['schedule', 'Schedule'], ['techdesk', 'Tech team'], ['search', 'Search'], ['reports', 'Reports']],
   MANAGER: [['manage', 'Manage']],
   TECH: [['techdesk', 'Tech desk']]
 };
