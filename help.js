@@ -53,7 +53,9 @@ const HELP = {
     { title: 'Needs attention', html:
       '<p>Everything the app has flagged. Select several to dismiss, assign a holder, settle a short receipt or acknowledge. A "Not at scheduled property" alert appears at 14:00 for a supervisor who is not at a property starting today, and clears by itself when they arrive.</p>' },
     { title: 'Issues', html:
-      '<p>Review reported issues and photos. Select several to resolve at once.</p>' },
+      '<p>Review reported issues and photos. Select several to resolve at once.</p>' +
+      '<p><b>The repair journey.</b> Each faulty device shows its stage: At site, On the way to office, At office, Under review, On the way to product team, With product team, Coming back, Back from product team, Resolved, with how many days it has been there. Use the filters to see one stage. The device you just worked on moves to the top. When a transfer with a faulty device is received, the card asks what next: <b>Under review</b>, <b>Resolve</b>, or <b>Send to product team</b> (with a note and, if you like, the courier and tracking number). The product team confirms receipt and deposits it back; if they forget, press <b>Mark back from product team</b>. Then <b>Confirm receipt</b> and <b>Resolve</b>. Every step keeps its note: tap <b>Show the story</b>. Product-team handovers are listed in Transfer history as read-only cards.</p>' +
+      '<p>A device with an open issue is shown as <b>faulty</b> on its transfer, and it does not join the Office batch. When you resolve the issue of a device that came in through the Office, it comes back here under <b>Back from repair</b>: send it back (to the supervisor who reported it, or another) or keep it in the Office. SD cards go through the upload steps first. Tap any asset to see its full issue history.</p>' },
     { title: 'Assets: add and import', html:
       '<p>Add assets one per line, or import many from a CSV file.</p>' +
       '<ol><li>Tap <b>Download CSV template</b> and fill it in. Columns: AssetID, Category (DEVICE or SD_CARD), SubType, Serial, Capacity, HolderEmail.</li>' +
@@ -70,6 +72,9 @@ const HELP = {
     { title: 'Schedule', html: '<p>Every supervisor\'s current and next property, whether they are at it, and the movement history. Tap <b>Why</b> to see how a status was worked out.</p>' },
     { title: 'Needs attention and Issues', html: '<p>Flagged items and reported issues. Select several to act on them together.</p>' },
     { title: 'Reports', html: '<p>Download CSV reports.</p>' }
+  ],
+  TECH: [
+    { title: 'The Tech desk', html: '<p>These are the faulty devices the Office has sent to you for repair. <b>On the way to the product team:</b> press <b>Confirm receipt</b> when a device reaches you. <b>With the product team:</b> when it is ready, press <b>Deposit back after repair</b>, choose what happened (Repaired, Part replaced or Not repairable) and write what was done. The Office then confirms receipt. Tap <b>Show the story</b> to see every step of a device.</p><p>If you forget a step, the Office can mark the device back themselves, and the story will say so.</p>' }
   ],
   MANAGER: [
     { title: 'What Manage is for', html: '<p>Manage lets you change the setup of the app here, so you rarely need to open the spreadsheet. Every change you make is recorded: who, when, what it was and what it became.</p>' },
