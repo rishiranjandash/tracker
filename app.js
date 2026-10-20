@@ -727,6 +727,7 @@ function go(t, keepScroll, arg) {
   try { if (me && TABS[me.role].some(function (x) { return x[0] === t; })) localStorage.setItem('at_tab_' + me.role, t); } catch (e) { /* ignore */ }
   const hl = PARENT_TAB[t] !== undefined ? PARENT_TAB[t] : t;
   $('tabs').querySelectorAll('button').forEach(function (b) { b.classList.toggle('active', b.dataset.tab === hl); });
+  const act = $('tabs').querySelector('button.active'); if (act) $('tabs').scrollLeft = Math.max(0, act.offsetLeft - ($('tabs').clientWidth - act.offsetWidth) / 2);   // the tab bar scrolls inside itself: keep the current tab in view
   if (!keepScroll) window.scrollTo(0, 0);
   const v = VIEWS[t];
   Promise.resolve(v(arg)).catch(function (e) { if (mine === navId) $('view').innerHTML = '<div class="card"><div class="muted">' + esc(e.message) + '</div></div>'; });
@@ -2566,18 +2567,3 @@ $('roleSwitch').addEventListener('change', function () {
   try { localStorage.setItem('at_role', activeRole); } catch (e) { /* ignore */ }
   homeSel.clear(); startSession();
 });
-
-// Phone: a table with many columns is shown as one card per row (style.css), so each value needs its column title; set from the table head after every screen is drawn.
-(function () {
-  let timer = null;
-  function stackTables() {
-    document.querySelectorAll('#view table').forEach(function (t) {
-      const heads = Array.prototype.map.call(t.querySelectorAll('thead th'), function (h) { return h.textContent.trim(); });
-      if (heads.length < 5 || t.classList.contains('stack')) return;
-      t.classList.add('stack');
-      t.querySelectorAll('tbody tr').forEach(function (tr) { Array.prototype.forEach.call(tr.children, function (td, i) { td.setAttribute('data-label', heads[i] || ''); }); });
-    });
-  }
-  const host = document.getElementById('view');
-  if (host && window.MutationObserver) new MutationObserver(function () { clearTimeout(timer); timer = setTimeout(stackTables, 20); }).observe(host, { childList: true, subtree: true });
-})();
