@@ -204,3 +204,4 @@ button.btn.loading::before { content: ''; display: inline-block; width: .85em; h
 
 /* the invoice outbox note sits above the photo note */
 .photoStatus.inv { bottom: 112px; }
+.card.faultyCard { border-color: var(--bad); }
