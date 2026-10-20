@@ -206,50 +206,34 @@ button.btn.loading::before { content: ''; display: inline-block; width: .85em; h
 .photoStatus.inv { bottom: 112px; }
 .card.faultyCard { border-color: var(--bad); }
 
-/* ===== Phone fit: nothing may be wider than the screen, and nothing scrolls sideways ===== */
-html { -webkit-text-size-adjust: 100%; }
+/* ===== Phone fit =====
+ * The PAGE never gets wider than the screen (overflow-x: clip does not turn the page into a scroll box, so pinned headers still work).
+ * Long things scroll INSIDE their own box: the tab bar, wide tables. Text keeps its normal shape: words are never split letter by letter. */
+html, body { max-width: 100%; overflow-x: clip; }
 body { overflow-wrap: break-word; }
 img, video, canvas { max-width: 100%; }
 select, input[type=text], input[type=date], textarea { max-width: 100%; min-width: 0; }
-.chip, .pill { max-width: 100%; overflow-wrap: anywhere; }
 .card, .tile, .wk, .item { min-width: 0; }
+nav.tabs { max-width: 100%; overscroll-behavior-x: contain; -webkit-overflow-scrolling: touch; }
+.tablewrap { max-width: 100%; overscroll-behavior-x: contain; -webkit-overflow-scrolling: touch; }
 .wkgrid { grid-template-columns: repeat(auto-fill, minmax(min(310px, 100%), 1fr)); }
 .topbar { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
-.actionbar { padding-left: max(12px, env(safe-area-inset-left, 0px)); padding-right: max(12px, env(safe-area-inset-right, 0px)); padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px)); }
-.actionbar input[type=text] { flex: 1 1 140px; max-width: 100% !important; min-width: 0; }
-.actionbar .btn { flex: none; }
+.actionbar { max-height: 50vh; overflow-y: auto; padding-left: max(12px, env(safe-area-inset-left, 0px)); padding-right: max(12px, env(safe-area-inset-right, 0px)); padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px)); }
 
 @media (max-width: 700px) {
-  /* header: the title and the buttons on the first line, the office and role pickers sharing the second */
+  /* header: the title and the buttons on the first line, the office and role pickers sharing the second, so none of it runs off the screen */
   .topbar { flex-wrap: wrap; row-gap: 8px; column-gap: 8px; padding-top: 8px; padding-bottom: 8px; }
   .topbar h1 { flex: 1 1 auto; white-space: nowrap; }
-  .topbar .linkBtn { flex: none; padding: 6px 4px; }
+  .topbar .linkBtn { flex: none; padding: 6px 4px; white-space: nowrap; }
   .topbar select { order: 10; flex: 1 1 calc(50% - 8px); min-width: 0; width: auto; font-size: 14px; min-height: 38px; }
-  /* tabs: a tidy grid that wraps instead of a bar that runs off the screen */
-  nav.tabs { display: grid; grid-template-columns: repeat(auto-fit, minmax(72px, 1fr)); gap: 5px; overflow: visible; padding: 8px max(10px, env(safe-area-inset-left, 0px)); }
-  nav.tabs button { flex: none; min-width: 0; white-space: normal; text-align: center; line-height: 1.15; font-size: 12.5px; padding: 8px 2px; overflow-wrap: anywhere; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
-  nav.tabs button.active { background: var(--info-bg); border-color: var(--brand); border-bottom-color: var(--brand); color: var(--brand); }
   main { padding-left: max(10px, env(safe-area-inset-left, 0px)); padding-right: max(10px, env(safe-area-inset-right, 0px)); }
   .stickyHead.flat, .stickyHead { margin-left: 0; margin-right: 0; }
   .modal { padding: 12px 8px; }
   .modal .box { padding: 14px; }
-  .row.spread { gap: 8px; }
-  .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  table { font-size: 13px; }
-  /* a wide table becomes one card per row: the column title sits next to each value, so nothing scrolls sideways */
-  .tablewrap { overflow: visible; }
-  table.stack, table.stack tbody, table.stack tr, table.stack td { display: block; width: 100%; }
-  table.stack thead { display: none; }
-  table.stack tr { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin-bottom: 8px; }
-  table.stack td { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; border: 0; padding: 3px 0; text-align: right; }
-  table.stack td::before { content: attr(data-label); color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .03em; text-align: left; flex: none; max-width: 55%; }
-  table.stack td:first-child { display: block; font-weight: 600; text-align: left; border-bottom: 1px solid var(--line); margin-bottom: 4px; padding-bottom: 6px; }
-  table.stack td:first-child::before, table.stack td[data-label=""]::before { content: none; }
-  table.stack td:empty { display: none; }
-}
-@media (max-width: 340px) {
-  nav.tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-}
-@media (max-width: 380px) {
-  .card { padding: 12px; }
+  /* the bar that opens at the bottom when you tick something: the count on its own line, the note on its own line, then the buttons side by side, wrapping onto another line when they must */
+  .actionbar { gap: 8px; padding-top: 8px; }
+  .actionbar .grow { flex: 1 1 100%; }
+  .actionbar input[type=text] { flex: 1 1 100%; width: auto; max-width: 100% !important; }
+  .actionbar .btn, .actionbar .linkBtn { flex: 1 1 auto; white-space: nowrap; text-align: center; }
+  .actionbar select { flex: 1 1 100%; width: auto; }
 }
