@@ -98,7 +98,7 @@ function invOutboxHtml() {
       : it.state === 'RETRY' ? '<div class="small muted">No signal or the server is busy. It will be sent again by itself. ' + esc(it.error || '') + '</div>'
       : it.state === 'FAILED' ? '<div class="small" style="color:var(--bad)">Could not be sent: ' + esc(it.error || '') + '</div>'
       : '<div class="small muted">Saved on your phone. It will be sent in a moment.</div>';
-    return '<div class="card"><div class="row spread"><div><b>' + esc(f.refType === 'PROPS' ? 'Props bought' : f.category) + '</b> · ' + invMoney(f.amount) + '<div class="small muted">' + (f.brand ? esc(f.brand) + ' · ' : '') + esc(f.movementDate) + ' · ' + n + (n > 1 ? ' pictures' : ' picture') + ' (' + up + ' uploaded)</div></div>' +
+    return '<div class="card"><div class="row spread"><div><b>' + esc(f.refType === 'PROPS' ? 'Props bought' : (f.category || invForLabel(f.refType || ''))) + '</b> · ' + invMoney(f.amount) + '<div class="small muted">' + (f.brand ? esc(f.brand) + ' · ' : '') + esc(f.movementDate) + ' · ' + n + (n > 1 ? ' pictures' : ' picture') + ' (' + up + ' uploaded)</div></div>' +
       pill(it.state === 'SENDING' ? 'sending' : it.state === 'FAILED' ? 'not sent' : 'waiting', it.state === 'FAILED' ? 'bad' : 'info') + '</div>' + status +
       '<div class="row" style="margin-top:8px">' + (it.state === 'SENDING' ? '' : '<button class="btn small" data-inv-retry="' + esc(it.key) + '">' + (it.state === 'FAILED' ? 'Try again' : 'Send now') + '</button><button class="btn secondary small" data-inv-del="' + esc(it.key) + '">Delete</button>') + '</div></div>';
   }).join('');
@@ -113,7 +113,7 @@ function invDaysAgo(n) { return new Date(Date.now() + 19800000 - n * 86400000).t
 // ---------- the Invoices tab ----------
 function invoiceCard(i, canReview) {
   const pics = i.photos.map(function (id, k) { return '<button class="btn secondary small" data-photo="' + esc(id) + '">Picture ' + (k + 1) + '</button>'; }).join('');
-  return '<div class="card"><div class="row spread" style="align-items:flex-start"><div><b>' + invMoney(i.amount) + '</b> · ' + esc(i.category) +
+  return '<div class="card"><div class="row spread" style="align-items:flex-start"><div><b>' + invMoney(i.amount) + '</b>' + (i.category ? ' · ' + esc(i.category) : '') +
     '<div class="small muted">' + (i.brand ? esc(i.brand) + ' · ' : '') + (i.refType === 'PROPS' ? 'bought ' : 'moved ') + esc(i.movementDate) + (i.refText ? ' · ' + esc(i.refText) : '') + '</div>' +
     (canReview ? '<div class="small">' + esc(i.by) + (i.office ? ' · ' + esc(i.office) : '') + '</div>' : '') +
     ((i.invoiceNo || i.trackingNo) ? '<div class="small muted">' + (i.invoiceNo ? 'Invoice ' + esc(i.invoiceNo) : '') + (i.invoiceNo && i.trackingNo ? ' · ' : '') + (i.trackingNo ? 'Tracking ' + esc(i.trackingNo) : '') + '</div>' : '') +
@@ -154,7 +154,7 @@ VIEWS.invoices = function () {
           '<div class="card"><b>Summary by what it is for</b>' + d.byType.map(function (b) { return '<button class="item linkBtn" data-inv-for="' + esc(b.type || 'NONE') + '" style="width:100%;text-align:left"><div class="grow">' + invForLabel(b.type) + '<div class="small muted">' + b.count + (b.count === 1 ? ' invoice' : ' invoices') + (b.toReview ? ' · ' + b.toReview + ' to review' : '') + '</div></div><b>' + invMoney(b.amount) + '</b></button>'; }).join('') + '</div>' +
           '<div class="card"><div class="row" style="gap:8px;flex-wrap:wrap"><select id="ifStatus" style="width:auto">' + opt(['SUBMITTED', 'APPROVED', 'REJECTED'], invFilter.status, 'Any status') + '</select>' +
           '<select id="ifFor" style="width:auto">' + [['', 'Transfers, check-ins, props…'], ['TRANSFER', 'Transfers'], ['CHECKIN', 'Check-ins'], ['PROPS', 'Props bought']].map(function (x) { return '<option value="' + x[0] + '"' + (x[0] === invFilter.refType ? ' selected' : '') + '>' + x[1] + '</option>'; }).join('') + '</select>' +
-          '<select id="ifCat" style="width:auto">' + opt(o.categories, invFilter.category, 'Any category') + '</select><select id="ifBrand" style="width:auto">' + opt(o.brands, invFilter.brand, 'Any logistic brand') + '</select>' +
+          (o.showCategory ? '<select id="ifCat" style="width:auto">' + opt(o.categories, invFilter.category, 'Any category') + '</select>' : '') + '<select id="ifBrand" style="width:auto">' + opt(o.brands, invFilter.brand, 'Any logistic brand') + '</select>' +
           '<select id="ifSup" style="width:auto"><option value="">Any supervisor</option>' + sl.map(function (s) { return '<option value="' + esc(s.id) + '"' + (s.id === invFilter.supervisorId ? ' selected' : '') + '>' + esc(s.name) + '</option>'; }).join('') + '</select>' +
           '<label class="small muted">Moved from<input type="date" id="ifFrom" value="' + esc(invFilter.from) + '"></label><label class="small muted">to<input type="date" id="ifTo" value="' + esc(invFilter.to) + '"></label>' +
           '<button class="btn secondary small" id="ifClear">Clear</button><button class="btn secondary small" data-report="invoices">Download CSV</button></div></div>';
@@ -162,7 +162,7 @@ VIEWS.invoices = function () {
       html += '<h3>' + (isAdmin ? 'Invoices' : 'My invoices') + '</h3>' + (d.invoices.length ? d.invoices.map(function (i) { return invoiceCard(i, d.canReview); }).join('') + (d.more ? '<p class="small muted">Showing the latest 200. Narrow the filters to see others.</p>' : '')
         : '<div class="card">' + emptyState(isAdmin ? 'No invoices match.' : 'You have not sent any invoices yet.') + '</div>');
       $('view').innerHTML = html;
-      const reload = function () { invFilter = { status: $('ifStatus').value, category: $('ifCat').value, brand: $('ifBrand').value, supervisorId: $('ifSup').value, refType: $('ifFor').value, from: $('ifFrom').value, to: $('ifTo').value }; go('invoices', true); };
+      const reload = function () { invFilter = { status: $('ifStatus').value, category: $('ifCat') ? $('ifCat').value : '', brand: $('ifBrand').value, supervisorId: $('ifSup').value, refType: $('ifFor').value, from: $('ifFrom').value, to: $('ifTo').value }; go('invoices', true); };
       ['ifStatus', 'ifFor', 'ifCat', 'ifBrand', 'ifSup', 'ifFrom', 'ifTo'].forEach(function (id) { const e = $(id); if (e) e.addEventListener('change', reload); });
       if ($('ifClear')) $('ifClear').addEventListener('click', function () { invFilter = { status: '', category: '', brand: '', supervisorId: '', refType: '', from: '', to: '' }; go('invoices', true); });
       $('invNew').addEventListener('click', function () { pending($('invNew')); go('invoiceNew'); });
@@ -188,7 +188,7 @@ VIEWS.invoiceNew = function (arg) {
       (arg.requestId ? '<div class="banner warn"><div class="grow small"><b>Requested by an admin:</b> ' + (arg.refType === 'PROPS' ? 'props invoice' : 'invoice of ' + esc(arg.refText || arg.refId || 'a transfer')) + '.</div></div>' : '') +
       '<label class="f">What is this invoice for?</label><select id="ivFor"><option value="TRANSFER">A transfer</option><option value="CHECKIN">A check-in</option><option value="PROPS">Props bought</option><option value="">Something else</option></select>' +
       '<div id="ivRefBox"></div>' +
-      '<div id="ivCatBox"><label class="f">Category</label>' + sel('ivCat', o.categories, 'Choose…') + '</div>' +
+      (o.showCategory ? '<div id="ivCatBox"><label class="f">Category</label>' + sel('ivCat', o.categories, 'Choose…') + '</div>' : '<div id="ivCatBox" hidden></div>') +
       '<label class="f">Amount (₹)</label><input type="text" id="ivAmount" inputmode="decimal" placeholder="e.g. 1250.50">' +
       '<label class="f" id="ivBrandL">Logistic brand</label><select id="ivBrand"></select>' +
       '<label class="f" id="ivDateL">Date of the movement</label><input type="date" id="ivDate" max="' + invToday() + '" value="' + esc(arg.movementDate || '') + '">' +
@@ -234,12 +234,12 @@ VIEWS.invoiceNew = function (arg) {
     });
     $('ivSubmit').addEventListener('click', function (e) {
       busy(e.target, async function () {
-        const fields = { category: $('ivCat').value, amount: $('ivAmount').value.trim(), brand: $('ivBrand').value, movementDate: $('ivDate').value, refType: $('ivFor').value, refId: $('ivRef') ? $('ivRef').value : '', requestId: arg.requestId || '',
+        const fields = { category: $('ivCat') ? $('ivCat').value : '', amount: $('ivAmount').value.trim(), brand: $('ivBrand').value, movementDate: $('ivDate').value, refType: $('ivFor').value, refId: $('ivRef') ? $('ivRef').value : '', requestId: arg.requestId || '',
           invoiceNo: $('ivNo').value.trim(), trackingNo: $('ivTrack').value.trim(), note: $('ivNote').value.trim() };
         if (fields.refType === 'PROPS') fields.category = 'Props bought';
         if (fields.refType && fields.refType !== 'PROPS' && !fields.refId) return msg('Choose the ' + (fields.refType === 'CHECKIN' ? 'check-in' : 'transfer') + ', or pick "Something else".', true);
         if (fields.refType === 'PROPS' && !fields.note) return msg('Say what was bought, in the note.', true);
-        if (!fields.category) return msg('Choose the category.', true);
+        if (o.showCategory && !fields.category) return msg('Choose the category.', true);
         const amt = Number(fields.amount.replace(/[,\s]/g, ''));
         if (!(amt > 0)) return msg('Enter the invoice amount.', true);
         if (!fields.brand && fields.refType !== 'PROPS' && fields.refType !== 'CHECKIN') return msg('Choose the logistic brand.', true);
