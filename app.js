@@ -73,7 +73,7 @@ function catPrefix(c) { return c === 'DEVICE' ? '' : catLabel(c) + ' '; }
 // ===================== TRANSPORT =====================
 
 // Actions that only read. Everything else is a save, which wipes the screen memo below.
-const READS = { officeStock: 1, checkinList: 1, managerOverview: 1, saveLocation: 1, stays: 1, home: 1, picker: 1, search: 1, issues: 1, flags: 1, notifications: 1, supervisors: 1, properties: 1, supervisorList: 1, team: 1, assignments: 1, report: 1, options: 1, transfers: 1, transferHistory: 1, officeBatches: 1, invoices: 1, invoiceCheckins: 1, techDesk: 1, issueStory: 1, pulse: 1, photoGet: 1, sync: 1 };
+const READS = { officeStock: 1, checkinList: 1, managerOverview: 1, saveLocation: 1, stays: 1, home: 1, picker: 1, search: 1, issues: 1, flags: 1, notifications: 1, supervisors: 1, properties: 1, supervisorList: 1, team: 1, assignments: 1, report: 1, options: 1, transfers: 1, transferHistory: 1, officeBatches: 1, invoices: 1, invoiceCheckins: 1, locationWarnings: 1, techDesk: 1, issueStory: 1, pulse: 1, photoGet: 1, sync: 1 };
 const NO_MEMO = { saveLocation: 1, search: 1, report: 1, photoGet: 1, pulse: 1, sync: 1, notifications: 1 };
 let memo = {};          // last answer for each read, so a screen can be drawn instantly while a fresh answer loads
 let memoEpoch = 0;      // bumped by every save, so an answer that was in flight during a save is not remembered
@@ -1046,6 +1046,7 @@ VIEWS.dash = function () {
       (d.unlocated ? '<p class="small muted">' + d.unlocated + ' asset(s) are with a supervisor whose location is not known yet, or at a property that is not in the list.</p>' : '') +
       '<p class="small muted">Workforce is today\'s attendance by Location ID. Only working devices count towards the requirement. ' + (me.role === 'ADMIN' ? '<button class="linkBtn" data-refreshcfg>Refresh settings</button> (settings are cached for a couple of minutes)' : '') + '</p></div>';
     $('view').innerHTML = html;
+    loadLocationBanner();
   });
 };
 
@@ -1574,6 +1575,7 @@ VIEWS.newTransfer = function (preselect) {
   $('view').innerHTML = '<div class="card"><div class="row spread"><h2>' + (isAdmin ? 'Dispatch to a supervisor' : 'Send assets') + '</h2><button class="linkBtn" data-go="transfers">Back</button></div>' +
     '<div class="stickyHead">' + (isAdmin ? '<label class="f">' + (me.officeInfo && me.officeInfo.multi ? 'Send to (a supervisor, or another city\'s office)' : 'Supervisor receiving') + '</label><select id="toSup"><option value="">Choose…</option></select>'
       : '<label class="f">Send to</label><select id="toSup"><option value="OFFICE">' + esc(me.officeName || OPTS.ui.officeName) + '</option></select>') +
+    (isAdmin ? '<div id="toSupWhere"></div>' : '') +
     '<label class="f">Assets (type to search, tick to add)</label><div id="sendSearch"></div>' +
     (isAdmin ? '<label class="f" style="margin-bottom:0"><input type="checkbox" id="showAll"> Include assets the records show elsewhere (flagged for review)</label>' : '<div class="small muted">Devices and SD cards at your property are listed, yours first.</div>') + '</div>' +
     '<div id="pickHost"></div>' +
@@ -1584,6 +1586,10 @@ VIEWS.newTransfer = function (preselect) {
   return Promise.all([cachedCall('picker', {}, 30000), cachedCall('supervisorList', {}, 300000)]).then(function (r) {
     const all = r[0];
     $('toSup').innerHTML += r[1].map(function (s) { return '<option value="' + esc(s.id) + '">' + (isAdmin ? '' : 'Supervisor: ') + esc(s.name) + ' (' + esc(s.location) + ')</option>'; }).join('');
+    if (isAdmin) {   // under the chosen supervisor: their latest location, to know where to send the parcel
+      const byId = {}; r[1].forEach(function (x) { byId[x.id] = x; });
+      $('toSup').addEventListener('change', function () { const x = byId[$('toSup').value]; $('toSupWhere').innerHTML = x ? '<div class="card" style="margin:8px 0 0"><b>' + esc(x.name) + '</b>' + captureHtml(x.capture, x.locationWarning) + '</div>' : ''; });
+    }
     const oi = me.officeInfo;
     if (isAdmin && oi && oi.multi) {
       const others = oi.offices.filter(function (o) { return o.id !== oi.own; });
@@ -2447,11 +2453,49 @@ function wireCsvImport() {
 }
 
 // ---- Supervisors (admin / ops) ----
+/** Where a supervisor was last seen: the coordinates (latitude, longitude), a Google Maps link and when it was captured, so an admin knows where to send a parcel without asking. */
+/** A location challenge is open (or was approved less than 3 hours ago): the position shown for that supervisor may still be the wrong one. */
+function locationWarningHtml(w) {
+  if (!w) return '';
+  const many = w.count > 1 ? ' (' + w.count + ' challenges)' : '';
+  if (w.state === 'OPEN') return '<div class="banner bad" style="margin:6px 0"><div class="grow"><b>Location may be wrong.</b> A location challenge' + many + (w.property ? ' for ' + esc(w.property) : '') + ' is still open' + (w.at ? ' (raised ' + fmt(w.at) + ')' : '') + '. The position below may not be right. Ask the supervisor before you send a parcel.</div></div>';
+  return '<div class="banner warn" style="margin:6px 0"><div class="grow"><b>Location may still be wrong.</b> A location challenge' + many + (w.property ? ' for ' + esc(w.property) : '') + ' was approved ' + fmt(w.approvedAt) + '. The corrected location is applied at the recalibration at ' + fmt(w.fixedAt) + ' (a quarter past 12, 3, 6 and 9, am and pm). Until then the position below may be the old one.</div></div>';
+}
+
+function captureHtml(c, w) {
+  if (!c) return locationWarningHtml(w) + '<div class="small muted" style="margin-top:4px">No location captured yet. It appears once they open the app with location allowed, or scan their attendance.</div>';
+  return locationWarningHtml(w) + captureBody(c);
+}
+function captureBody(c) {
+  if (!c) return '<div class="small muted" style="margin-top:4px">No location captured yet. It appears once they open the app with location allowed, or scan their attendance.</div>';
+  return '<div class="small" style="margin-top:4px">Last location: <b>' + esc(c.text) + '</b> <button class="linkBtn" data-copy="' + esc(c.text) + '">Copy</button> · <a href="' + esc(c.mapUrl) + '" target="_blank" rel="noopener">Open in Google Maps</a></div>' +
+    '<div class="small muted">Captured ' + fmt(c.at) + ' · ' + (c.source === 'GPS' ? 'phone location' + (c.accuracy ? ' (accurate to about ' + esc(c.accuracy) + ' m)' : '') : 'attendance scan') + (c.ageHours > 24 ? ' ' + pill('over a day old', 'warn') : '') + '</div>';
+}
+
+/** One banner for every supervisor whose shown location is doubtful (an open location challenge, or approved less than 3 hours ago). */
+function locationSummaryHtml(items) {
+  return '<div class="banner ' + (items.some(function (x) { return x.state === 'OPEN'; }) ? 'bad' : 'warn') + '" style="margin-bottom:10px"><div class="grow"><b>Location may be wrong for ' + items.length + (items.length > 1 ? ' supervisors' : ' supervisor') + '</b>' +
+    items.map(function (x) { return '<div class="small"><b>' + esc(x.name) + '</b>: ' + (x.state === 'OPEN' ? 'a location challenge' + (x.property ? ' for ' + esc(x.property) : '') + ' is still open' : 'a challenge' + (x.property ? ' for ' + esc(x.property) : '') + ' was approved ' + fmt(x.approvedAt) + ', corrected at the recalibration at ' + fmt(x.fixedAt)) + '</div>'; }).join('') +
+    '<div class="small muted">Until then the position shown for them may be the old one. Ask before you send a parcel.</div></div>' + (tab === 'sups' ? '' : '<button class="btn small" data-go="sups">Open Supervisors</button>') + '</div>';
+}
+/** Dashboard: the same banner at the top, fetched on the side so the Dashboard itself is not slowed down. */
+function loadLocationBanner() {
+  if (me.role !== 'ADMIN' && me.role !== 'OPS') return;
+  const myNav = navId;
+  cachedCall('locationWarnings', {}, 60000).then(function (r) {
+    if (myNav !== navId || tab !== 'dash' || !r.items.length) return;
+    const old = $('locWarnBox'); if (old) old.remove();
+    const box = document.createElement('div'); box.id = 'locWarnBox'; box.innerHTML = locationSummaryHtml(r.items);
+    $('view').insertBefore(box, $('view').firstChild);
+  }).catch(function () { /* the banner is only a help: the Dashboard works without it */ });
+}
+
 VIEWS.sups = function () {
   return Promise.all([callBackend('supervisors'), callBackend('properties')]).then(function (r) {
     const sups = r[0], props = r[1];
-    let html = '<div class="card"><h2>Supervisors: where they are and what is next</h2><p class="small muted">Current location group comes from attendance. Upcoming properties come from the property schedule (see the Schedule tab); they are no longer entered here.</p>' + sups.map(function (s) {
-      return '<div class="item" style="align-items:flex-start"><div class="grow"><div class="t">' + esc(s.name) + ' <span class="muted">' + esc(s.id) + '</span></div><div class="small">Attendance location <b>' + esc(s.locationName) + '</b>' + (s.since ? ' since ' + fmt(s.since) : '') + '</div>' +
+    const warned = sups.filter(function (x) { return x.locationWarning; }).map(function (x) { return Object.assign({ name: x.name }, x.locationWarning); });
+    let html = (warned.length ? locationSummaryHtml(warned) : '') + '<div class="card"><h2>Supervisors: where they are and what is next</h2><p class="small muted">Current location group comes from attendance. Upcoming properties come from the property schedule (see the Schedule tab); they are no longer entered here.</p>' + sups.map(function (s) {
+      return '<div class="item" style="align-items:flex-start"><div class="grow"><div class="t">' + esc(s.name) + ' <span class="muted">' + esc(s.id) + '</span></div><div class="small">Attendance location <b>' + esc(s.locationName) + '</b>' + (s.since ? ' since ' + fmt(s.since) : '') + '</div>' + captureHtml(s.capture, s.locationWarning) +
         (s.planned.length ? '<div class="small">Upcoming: ' + s.planned.map(function (p) { return esc(p.locationName) + ' (' + esc(p.from) + ')'; }).join('; ') + '</div>' : '<div class="small muted">Nothing upcoming in the schedule.</div>') +
         (s.history.length ? '<div class="small muted">Attendance history: ' + s.history.map(function (p) { return esc(p.locationName) + ' ' + esc(p.from) + (p.to ? '→' + esc(p.to) : '→now'); }).join(' · ') + '</div>' : '') + '</div>' + pill(s.status.toLowerCase(), s.status === 'ACTIVE' ? 'ok' : '') + '</div>';
     }).join('') + '</div>';
@@ -2566,4 +2610,12 @@ $('roleSwitch').addEventListener('change', function () {
   teamDirty = false; activeRole = $('roleSwitch').value;
   try { localStorage.setItem('at_role', activeRole); } catch (e) { /* ignore */ }
   homeSel.clear(); startSession();
+});
+
+// Copy buttons (data-copy): the text goes to the clipboard, with a fallback for phones that refuse it.
+document.addEventListener('click', function (e) {
+  const b = e.target.closest('[data-copy]'); if (!b) return;
+  const txt = b.dataset.copy, done = function () { toast('Copied ' + txt); };
+  const fallback = function () { const ta = document.createElement('textarea'); ta.value = txt; document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); done(); } catch (x) { toast('Select and copy: ' + txt, true); } ta.remove(); };
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(done, fallback); else fallback();
 });
