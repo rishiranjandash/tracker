@@ -23,7 +23,7 @@ const HELP = {
       '<ol><li>Pick the asset from the list in each slot.</li><li>Tap <b>Save changes</b>.</li></ol>' +
       '<p><b>Take all off</b> clears one person. <b>Still with same people</b> confirms nothing has changed (the app asks every 4 hours between 07:00 and 21:00). People who are not registered in the Awign app show "Not registered in the Awign app yet"; you can still assign to them.</p>' },
     { title: 'Invoices', html:
-      '<p>Open <b>Invoices</b> and press <b>New invoice</b>: choose what it is for (a transfer, a check-in, props bought, or something else), then the amount, the logistic brand and the date, and add 1-3 pictures of the invoice. For props bought, say what was bought in the note.</p>' +
+      '<p>Open <b>Invoices</b> and press <b>New invoice</b>: choose what it is for (a transfer, a check-in, props bought, or something else), then the amount, the logistic brand and the date, and add 1-3 pictures or PDF files of the invoice (a PDF can be up to 3 MB). For props bought, say what was bought in the note.</p>' +
       '<p>Pressing <b>Submit invoice</b> saves it on your phone first, so it still goes through if the signal drops or you close the app. The <b>Waiting to send</b> list shows anything that has not reached the server yet; it is sent again by itself, or press <b>Send now</b>. If an admin has asked for an invoice, it appears under <b>Asked for by an admin</b>: press <b>Send this invoice</b>. An invoice that is sent back shows the reason; send a better one.</p>' },
     { title: 'Send assets and confirm receipt', html:
       '<ol><li>Open <b>Transfers</b> and choose where to send: the Office or another supervisor.</li><li>Tick the assets and send.</li></ol>' +
@@ -44,7 +44,7 @@ const HELP = {
     { title: 'Schedule', html:
       '<p>Shows every supervisor\'s current and next property and whether their last location or scan matches it. Tap <b>Why</b> to see exactly what the status was worked out from. Below is the full movement history with a filter by supervisor, and any schedule rows not linked to a supervisor. Ask your manager to correct those rows.</p>' },
     { title: 'Invoices', html:
-      '<p><b>Invoices</b> lists what supervisors have sent, with the pictures. Filter by status, category, brand, supervisor or date; <b>Download CSV</b> gives the list for accounts. <b>Approve</b> an invoice, or <b>Send back</b> with a reason (the supervisor is asked to send a better one).</p>' +
+      '<p><b>Invoices</b> lists what supervisors have sent, with their pictures and PDFs. Filter by status, category, brand, supervisor or date; <b>Download CSV</b> gives the list for accounts. <b>Approve</b> an invoice, or <b>Send back</b> with a reason (the supervisor is asked to send a better one).</p>' +
       '<p><b>Request invoices</b> asks for the invoice of past or present transfers or check-ins (the supervisor on each is asked) or for props bought (pick the supervisors and say what for); set a note and a due date. A request that is late shows in Needs attention. The logistic brand lists (one each for transfers, check-ins and props) are edited in Manage > Options (LOGISTIC_BRAND_TRANSFER, LOGISTIC_BRAND_CHECKIN, LOGISTIC_BRAND_PROPS). The invoice category is hidden; set Settings > INVOICE_SHOW_CATEGORY to Y to bring it back.</p>' },
     { title: 'Transfers', html:
       '<p>Dispatch assets and confirm receipt of anything sent to the Office. The sender cannot confirm their own transfer. Tick only what arrived; the rest is flagged as short.</p>' +
