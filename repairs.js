@@ -48,7 +48,7 @@ function flowButtons(x) {
   };
   if (A) {
     if (x.stage === 'TO_OFFICE') b.push('<button class="btn small" data-go="transfers">Confirm receipt in Transfers</button>');
-    if (x.stage === 'OFFICE') { b.push(btn('review', 'Under review')); b.push(btn('resolve', 'Resolve')); b.push(btn('totech', 'Send to product team', true)); }
+    if (x.stage === 'OFFICE') { b.push(btn('review', 'Under review')); b.push(btn('resolve', 'Resolve')); b.push(btn('keep', 'Keep in Office')); b.push(btn('totech', 'Send to product team', true)); }
     if (x.stage === 'REVIEW') { b.push(btn('resolve', 'Resolve')); b.push(btn('totech', 'Send to product team', true)); }
     if (x.stage === 'TO_TECH' || x.stage === 'TECH') b.push(btn('techback', 'Mark back from product team'));
     if (x.stage === 'BACK_WAY') { b.push(btn('recvback', 'Confirm receipt', true)); b.push(btn('techback', 'Mark back myself')); }
@@ -88,6 +88,8 @@ document.addEventListener('click', function (e) {
   const done = function (msg) { return function () { toast(msg); go(tab, true); }; };
   if (f === 'review') return askNote({ title: 'Under review: ' + asset, intro: 'Check the device at the office.', noteLabel: 'What did you find?', ph: 'e.g. Reads on one laptop only', ok: 'Mark under review',
     run: function (v) { return callBackend('updateIssues', { issueIds: [issue], status: 'UNDER_REVIEW', resolution: v.note }).then(done('Marked under review')); } });
+  if (f === 'keep') return askNote({ title: 'Keep in Office: ' + asset, intro: 'The device stays in the Office and leaves the Transfers tab. It is followed in Issues as under review until you resolve it or send it to the product team.', noteLabel: 'Note', ph: 'e.g. Kept as a spare, fix later', ok: 'Keep in Office',
+    run: function (v) { return callBackend('updateIssues', { issueIds: [issue], status: 'UNDER_REVIEW', resolution: 'Kept in the Office' + (v.note ? ': ' + v.note : '') }).then(done(asset + ' kept in the Office, followed in Issues')); } });
   if (f === 'resolve') return askNote({ title: 'Resolve: ' + asset, intro: 'Once resolved, a device that came in through the Office comes back to the Office list to send back or keep.', noteLabel: 'How was it resolved?', ph: 'e.g. Tested, works fine', ok: 'Resolve',
     run: function (v) { return callBackend('updateIssues', { issueIds: [issue], status: 'RESOLVED', resolution: v.note }).then(done(asset + ' resolved')); } });
   if (f === 'totech') return askNote({ title: 'Send to product team: ' + asset, intro: 'The product team is told. The device stays with the Office on paper until you mark it back.', noteLabel: 'Note for the product team', ph: 'What to check', need: true, ref: true, ok: 'Send to product team',
