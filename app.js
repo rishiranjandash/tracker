@@ -381,6 +381,10 @@ window.addEventListener('online', function () { if (me) photoQueue.resume(); });
 
 function viewPhoto(fileId) {
   callBackend('photoGet', { fileId: fileId }).then(function (p) {
+    if (p.mime === 'application/pdf') {
+      const url = URL.createObjectURL(new Blob([Uint8Array.from(atob(p.base64), function (c) { return c.charCodeAt(0); })], { type: 'application/pdf' }));
+      return openModal('<div class="row spread"><h2>PDF invoice</h2><button class="linkBtn" data-close>Close</button></div><p><a class="btn" href="' + url + '" target="_blank" rel="noopener">Open the PDF</a> <a class="btn secondary" href="' + url + '" download="invoice.pdf">Download</a></p><iframe title="PDF invoice" src="' + url + '" style="width:100%;height:55vh;border:1px solid var(--line);border-radius:8px"></iframe>');
+    }
     openModal('<div class="row spread"><h2>Photo</h2><button class="linkBtn" data-close>Close</button></div><img class="photoThumb" alt="Attached photo" src="data:' + esc(p.mime) + ';base64,' + p.base64 + '">');
   }).catch(toastError);
 }
@@ -1363,8 +1367,8 @@ function transferCard(t) {
   if (t.tech) return html + '<div class="small muted" style="margin-top:6px">Tracked in Issues' + (t.override ? ' · marked by the office' : '') + '. ' + (t.status === 'IN_TRANSIT' ? 'Waiting for ' + esc(t.to) + ' to confirm. ' : '') + '<button class="assetlink" data-go="issues">Follow it in Issues</button></div></div>';
   if (t.atOffice && t.totalItems > t.items.length) html += '<div class="small muted">Showing only what is still waiting. The other ' + (t.totalItems - t.items.length) + ' of this transfer are in History' + (me.role === 'ADMIN' ? ' (or In the Office, if they are still being processed)' : '') + '.</div>';
   if (t.atOffice && me.role === 'ADMIN') {
-    const todo = t.items.filter(function (i) { return i.faulty && (i.stage === 'OFFICE' || i.stage === 'REVIEW'); });
-    if (todo.length) html += '<div class="banner info" style="margin-top:10px"><div class="grow"><b>What next for the faulty devices?</b>' + todo.map(function (i) { return '<div style="margin-top:8px"><div class="small"><b>' + esc(i.assetId) + '</b> · ' + esc(i.issueType) + ' ' + pill(i.stage === 'REVIEW' ? 'under review' : 'at office', 'info') + '</div>' + flowButtons({ issueId: i.issueId, assetId: i.assetId, stage: i.stage, handoverId: '' }) + '</div>'; }).join('') + '</div></div>';
+    const todo = t.items.filter(function (i) { return i.faulty && i.stage === 'OFFICE'; });
+    if (todo.length) html += '<div class="banner info" style="margin-top:10px"><div class="grow"><b>What next for the faulty devices?</b>' + todo.map(function (i) { return '<div style="margin-top:8px"><div class="small"><b>' + esc(i.assetId) + '</b> · ' + esc(i.issueType) + ' ' + pill('at office', 'info') + '</div>' + flowButtons({ issueId: i.issueId, assetId: i.assetId, stage: i.stage, handoverId: '' }) + '</div>'; }).join('') + '</div></div>';
   }
   html += '<div class="row" style="margin-top:8px">';
   if (t.status === 'IN_TRANSIT' && canReceive(t)) html += '<button class="btn small" data-receive="' + esc(t.id) + '">Confirm receipt</button>';
@@ -1742,7 +1746,7 @@ VIEWS.issues = function () {
     all.forEach(function (i) { if (i.stage === 'DONE') return; counts.ALL++; counts[issueGroupOf(i.stage)]++; });
     const list = all.filter(function (i) { return issueFilter === 'ALL' ? i.stage !== 'DONE' : issueGroupOf(i.stage) === issueFilter; });
     const cards = groupIssues(list);
-    $('view').innerHTML = '<div class="stickyHead flat"><div class="row spread"><h2 style="margin:0">' + (isAdmin ? 'Issues' : 'Your issues') + ' <span class="muted" style="font-weight:400">(' + cards.length + ' device' + (cards.length === 1 ? '' : 's') + ')</span></h2><div class="row">' + (isAdmin ? '<button class="linkBtn" id="issSelAll">Select all open</button>' : '') + '</div></div>' +
+    $('view').innerHTML = '<div class="stickyHead flat"><div class="row spread"><h2 style="margin:0">' + (me.role === 'SUPERVISOR' ? 'Your issues' : 'Issues') + ' <span class="muted" style="font-weight:400">(' + cards.length + ' device' + (cards.length === 1 ? '' : 's') + ')</span></h2><div class="row">' + (isAdmin ? '<button class="linkBtn" id="issSelAll">Select all open</button>' : '') + '</div></div>' +
       '<div class="row" style="gap:6px;flex-wrap:wrap;margin-top:8px">' + ISSUE_GROUPS.map(function (g) {
         return '<button class="btn ' + (issueFilter === g[0] ? '' : 'secondary ') + 'small" data-ifilter="' + g[0] + '">' + g[1] + (g[0] === 'DONE' ? '' : ' ' + counts[g[0]]) + '</button>';
       }).join('') + '</div></div>' +
