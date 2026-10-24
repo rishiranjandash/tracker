@@ -106,11 +106,11 @@ async function upSend(body, opts) {
  */
 async function uploadChunked(kind, refLabel, b64, opts) {
   opts = opts || {};
-  if (window.MOCK_UPLOAD_B64) return window.MOCK_UPLOAD_B64(b64);
+  if (window.MOCK_UPLOAD_B64) return window.MOCK_UPLOAD_B64(b64, opts.mime);
   const uploadId = opts.uploadId || upId('up');
   const total = Math.max(1, Math.ceil(b64.length / UP_PIECE));
   let missing = []; for (let i = 0; i < total; i++) missing.push(i);
-  const common = { mode: 'chunk', uploadId: uploadId, total: total, kind: kind, refLabel: refLabel, mime: 'image/jpeg' };
+  const common = { mode: 'chunk', uploadId: uploadId, total: total, kind: kind, refLabel: refLabel, mime: opts.mime || 'image/jpeg' };
   let sent = 0;
   for (let round = 0; round < 4; round++) {
     for (const i of missing) {
