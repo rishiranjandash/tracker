@@ -7,6 +7,7 @@
  * "Waiting to send" list with a Retry button.
  */
 
+const INV_PDF_MAX = 3 * 1024 * 1024;   // 3 MB: the most that goes up in the 60 pieces the server accepts
 const INV_TARGETS = { targets: [[1600, 0.8], [1600, 0.7], [1280, 0.65], [1024, 0.6]], maxBytes: 450 * 1024 };   // bigger than the other photos: text must stay readable
 let invOutbox = [], invRunning = false, invTimer = null, invLoaded = false;
 
@@ -51,8 +52,8 @@ async function invProcess(it) {
     for (let i = 0; i < it.photos.length; i++) {
       const p = it.photos[i];
       if (p.fileId) continue;
-      it.note = 'Sending picture ' + (i + 1) + ' of ' + it.photos.length; p.progress = ''; invPaint();
-      p.fileId = await uploadChunked('invoice', (it.fields.category || 'invoice').replace(/[^A-Za-z0-9]/g, ''), p.b64, { uploadId: p.id, onProgress: function (d, t) { p.progress = d + ' of ' + t; invPaint(); } });
+      it.note = 'Sending file ' + (i + 1) + ' of ' + it.photos.length; p.progress = ''; invPaint();
+      p.fileId = await uploadChunked('invoice', (it.fields.category || 'invoice').replace(/[^A-Za-z0-9]/g, ''), p.b64, { uploadId: p.id, mime: p.mime || 'image/jpeg', onProgress: function (d, t) { p.progress = d + ' of ' + t; invPaint(); } });
       await invSave(it);
     }
     it.note = 'Saving the invoice…'; invPaint();
@@ -112,7 +113,7 @@ function invDaysAgo(n) { return new Date(Date.now() + 19800000 - n * 86400000).t
 
 // ---------- the Invoices tab ----------
 function invoiceCard(i, canReview) {
-  const pics = i.photos.map(function (id, k) { return '<button class="btn secondary small" data-photo="' + esc(id) + '">Picture ' + (k + 1) + '</button>'; }).join('');
+  const pics = i.photos.map(function (id, k) { return '<button class="btn secondary small" data-photo="' + esc(id) + '">File ' + (k + 1) + '</button>'; }).join('');
   return '<div class="card"><div class="row spread" style="align-items:flex-start"><div><b>' + invMoney(i.amount) + '</b>' + (i.category ? ' · ' + esc(i.category) : '') +
     '<div class="small muted">' + (i.brand ? esc(i.brand) + ' · ' : '') + (i.refType === 'PROPS' ? 'bought ' : 'moved ') + esc(i.movementDate) + (i.refText ? ' · ' + esc(i.refText) : '') + '</div>' +
     (canReview ? '<div class="small">' + esc(i.by) + (i.office ? ' · ' + esc(i.office) : '') + '</div>' : '') +
@@ -195,19 +196,21 @@ VIEWS.invoiceNew = function (arg) {
       '<label class="f">Invoice number <span class="muted">(optional)</span></label><input type="text" id="ivNo" maxlength="60">' +
       '<label class="f">Tracking / AWB number <span class="muted">(optional)</span></label><input type="text" id="ivTrack" maxlength="60">' +
       '<label class="f" id="ivNoteL">Note <span class="muted">(optional)</span></label><textarea id="ivNote" maxlength="500"></textarea>' +
-      '<label class="f">Pictures of the invoice (up to ' + o.maxPhotos + ')</label><div id="ivPics" class="row" style="gap:8px;flex-wrap:wrap"></div>' +
-      '<div style="margin-top:8px"><button type="button" class="btn secondary small" id="ivAddWrap">Add a picture</button><input type="file" accept="image/*" id="ivFile" style="display:none"></div>' +
+      '<label class="f">Invoice: pictures or a PDF (up to ' + o.maxPhotos + ' files)</label><div id="ivPics" class="row" style="gap:8px;flex-wrap:wrap"></div>' +
+      '<div style="margin-top:8px"><button type="button" class="btn secondary small" id="ivAddWrap">Add a picture</button> <button type="button" class="btn secondary small" id="ivAddPdf">Add a PDF</button><input type="file" accept="image/*" id="ivFile" style="display:none"><input type="file" accept="application/pdf,.pdf" id="ivPdf" style="display:none"></div>' +
       '<div class="row" style="margin-top:14px"><button class="btn" id="ivSubmit">Submit invoice</button></div><div class="small" id="ivMsg" style="margin-top:8px"></div>' +
       '<p class="small muted">The invoice is saved on your phone first, so it still goes through if the signal drops or you close the app.</p></div>';
     const msg = function (t, bad) { const e = $('ivMsg'); e.textContent = t; e.style.color = bad ? 'var(--bad)' : ''; };
     const paintPics = function () {
       $('ivPics').innerHTML = photos.map(function (p) {
-        return '<div style="position:relative"><img src="' + esc(p.url) + '" alt="Picture" style="width:90px;height:90px;object-fit:cover;border-radius:8px;border:1px solid var(--line)' + (p.state === 'preparing' ? ';opacity:.5' : '') + '">' +
+        return '<div style="position:relative">' + (p.mime === 'application/pdf'
+          ? '<div style="width:90px;height:90px;border-radius:8px;border:1px solid var(--line);display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--bad-bg);color:var(--bad);font-weight:700">PDF<span class="small muted" style="font-weight:400;max-width:84px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(p.name || '') + '</span></div>'
+          : '<img src="' + esc(p.url) + '" alt="Picture" style="width:90px;height:90px;object-fit:cover;border-radius:8px;border:1px solid var(--line)' + (p.state === 'preparing' ? ';opacity:.5' : '') + '">') +
           '<button type="button" class="linkBtn" data-ivrm="' + esc(p.id) + '" style="position:absolute;top:-6px;right:-6px;background:var(--bg);border-radius:50%;width:24px;height:24px">×</button>' +
           (p.state === 'preparing' ? '<div class="small muted">Preparing…</div>' : p.state === 'error' ? '<div class="small" style="color:var(--bad)">Not usable</div>' : '') + '</div>';
       }).join('');
       $('ivAddWrap').style.display = photos.length >= o.maxPhotos ? 'none' : 'inline-block';
-      $('ivPics').querySelectorAll('[data-ivrm]').forEach(function (b) { b.addEventListener('click', function () { const k = photos.findIndex(function (p) { return p.id === b.dataset.ivrm; }); if (k >= 0) { URL.revokeObjectURL(photos[k].url); photos.splice(k, 1); paintPics(); } }); });
+      $('ivPics').querySelectorAll('[data-ivrm]').forEach(function (b) { b.addEventListener('click', function () { const k = photos.findIndex(function (p) { return p.id === b.dataset.ivrm; }); if (k >= 0) { if (photos[k].url) URL.revokeObjectURL(photos[k].url); photos.splice(k, 1); paintPics(); } }); });
     };
     const refList = { TRANSFER: trs.map(function (t) { return [t.id, t.id + ' · ' + t.from + ' → ' + t.to + ' · ' + fmt(t.createdAt)]; }),
       CHECKIN: cks.map(function (c) { return [c.id, (me.role === 'SUPERVISOR' ? '' : c.supervisor + ' · ') + c.place + ' · ' + fmt(c.at) + (c.status === 'DONE' ? '' : ' (' + c.status.toLowerCase() + ')')]; }) };
@@ -225,6 +228,18 @@ VIEWS.invoiceNew = function (arg) {
     $('ivFor').addEventListener('change', function () { syncFor(false); });
     syncFor(true);
     $('ivAddWrap').addEventListener('click', function () { $('ivFile').click(); });
+    $('ivAddPdf').addEventListener('click', function () { $('ivPdf').click(); });
+    $('ivPdf').addEventListener('change', function () {
+      const f = $('ivPdf').files[0]; $('ivPdf').value = '';
+      if (!f || photos.length >= o.maxPhotos) return;
+      if (!/pdf/i.test(f.type) && !/\.pdf$/i.test(f.name)) return msg('Choose a PDF file.', true);
+      if (f.size > INV_PDF_MAX) return msg('That PDF is too big (' + (f.size / 1048576).toFixed(1) + ' MB). The most is 3 MB: save it smaller or send a picture of it.', true);
+      msg('');
+      const p = { id: upId('ph'), file: f, url: '', mime: 'application/pdf', name: f.name, state: 'preparing', b64: '' };
+      p.promise = new Promise(function (res, rej) { const fr = new FileReader(); fr.onload = function () { p.b64 = String(fr.result).split(',')[1] || ''; p.state = p.b64 ? 'ready' : 'error'; paintPics(); res(); }; fr.onerror = function () { p.state = 'error'; paintPics(); rej(); }; fr.readAsDataURL(f); });
+      p.promise.catch(function () {});
+      photos.push(p); paintPics();
+    });
     $('ivFile').addEventListener('change', function () {
       const f = $('ivFile').files[0]; $('ivFile').value = '';
       if (!f || photos.length >= o.maxPhotos) return;
@@ -245,14 +260,14 @@ VIEWS.invoiceNew = function (arg) {
         if (!fields.brand && fields.refType !== 'PROPS' && fields.refType !== 'CHECKIN') return msg('Choose the logistic brand.', true);
         if (!fields.movementDate) return msg('Choose the date.', true);
         if (fields.movementDate > invToday()) return msg('The date of the movement cannot be in the future.', true);
-        if (!photos.length) return msg('Add at least one picture of the invoice.', true);
-        msg('Getting the pictures ready…');
+        if (!photos.length) return msg('Add at least one picture or PDF of the invoice.', true);
+        msg('Getting the files ready…');
         await Promise.all(photos.map(function (p) { return p.promise; }));
-        if (photos.some(function (p) { return p.state !== 'ready'; })) return msg('One of the pictures could not be used. Remove it and add it again.', true);
-        const item = { key: upId('inv'), email: me.email, createdAt: Date.now(), fields: fields, photos: photos.map(function (p) { return { id: upId('up'), b64: p.b64, fileId: '' }; }), state: 'PENDING', error: '', tries: 0, nextAt: 0 };
+        if (photos.some(function (p) { return p.state !== 'ready'; })) return msg('One of the files could not be used. Remove it and add it again.', true);
+        const item = { key: upId('inv'), email: me.email, createdAt: Date.now(), fields: fields, photos: photos.map(function (p) { return { id: upId('up'), b64: p.b64, mime: p.mime || 'image/jpeg', fileId: '' }; }), state: 'PENDING', error: '', tries: 0, nextAt: 0 };
         await LocalStore.put(item).catch(function () { /* memory only: it sends during this visit */ });
         invOutbox.push(item); invLoaded = true;
-        photos.forEach(function (p) { URL.revokeObjectURL(p.url); });
+        photos.forEach(function (p) { if (p.url) URL.revokeObjectURL(p.url); });
         toast('Saved on your phone. Sending…'); go('invoices');
         invPump();
       });
