@@ -237,3 +237,7 @@ nav.tabs { max-width: 100%; overscroll-behavior-x: contain; -webkit-overflow-scr
   .actionbar .btn, .actionbar .linkBtn { flex: 1 1 auto; white-space: nowrap; text-align: center; }
   .actionbar select { flex: 1 1 100%; width: auto; }
 }
+
+/* changes waiting for a signal (fast.js) */
+.obChip { position: fixed; left: 12px; right: 12px; bottom: 76px; z-index: 60; background: var(--warn-bg, #fff4d6); color: var(--text, #17202e); border: 1px solid var(--warn, #e0a100); border-radius: 12px; padding: 10px 14px; box-shadow: 0 4px 16px rgba(0,0,0,.18); cursor: pointer; }
+.obChip.hidden { display: none; }
