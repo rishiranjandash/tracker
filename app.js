@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Asset Tracker - frontend. Vanilla JS, no build step (GitHub Pages friendly).
  * Talks to Code.gs over JSONP (see apps-script/Code.gs for why). Photo upload is
  * the one POST (hidden form + postMessage).
@@ -73,7 +73,7 @@ function catPrefix(c) { return c === 'DEVICE' ? '' : catLabel(c) + ' '; }
 // ===================== TRANSPORT =====================
 
 // Actions that only read. Everything else is a save, which wipes the screen memo below.
-const READS = { officeStock: 1, checkinList: 1, managerOverview: 1, saveLocation: 1, stays: 1, home: 1, picker: 1, search: 1, issues: 1, flags: 1, notifications: 1, supervisors: 1, properties: 1, supervisorList: 1, team: 1, assignments: 1, report: 1, options: 1, transfers: 1, transferHistory: 1, officeBatches: 1, invoices: 1, invoiceCheckins: 1, locationWarnings: 1, techDesk: 1, issueStory: 1, pulse: 1, photoGet: 1, sync: 1 };
+const READS = { issueReport: 1, officeStock: 1, checkinList: 1, managerOverview: 1, saveLocation: 1, stays: 1, home: 1, picker: 1, search: 1, issues: 1, flags: 1, notifications: 1, supervisors: 1, properties: 1, supervisorList: 1, team: 1, assignments: 1, report: 1, options: 1, transfers: 1, transferHistory: 1, officeBatches: 1, invoices: 1, penalties: 1, invoiceCheckins: 1, locationWarnings: 1, techDesk: 1, issueStory: 1, pulse: 1, photoGet: 1, sync: 1 };
 const NO_MEMO = { saveLocation: 1, search: 1, report: 1, photoGet: 1, pulse: 1, sync: 1, notifications: 1 };
 let memo = {};          // last answer for each read, so a screen can be drawn instantly while a fresh answer loads
 let memoEpoch = 0;      // bumped by every save, so an answer that was in flight during a save is not remembered
@@ -81,16 +81,28 @@ let pulseNv = '';       // the version of the alerts this phone last counted
 let lastStamp = '';     // change detector from the 45-second pulse
 function memoKey(action, payload) { return action + '|' + JSON.stringify(payload || {}); }
 
+/** A slow connection (2G / 3G / data saver) waits longer for an answer, asks for less in the background and checks for changes less often. */
+function netSlow() { const c = navigator.connection; return !!c && (!!c.saveData || /2g|3g/.test(c.effectiveType || '')); }
+function netTimeoutMs() { const t = (navigator.connection || {}).effectiveType || ''; return /2g/.test(t) ? 100000 : t === '3g' ? 70000 : 45000; }
+/** Every copy is marked old: it still draws at once, and is refreshed behind the screen (nothing is thrown away, so nothing says "Loading…"). */
+function memoDirty() { Object.keys(memo).forEach(function (k) { memo[k].at = 0; }); memoEpoch++; lastStamp = ''; }
+function outboxPending() { return typeof obMine === 'function' && obMine().length > 0; }
+const inflight = {};    // the same read asked twice at once is asked once
+
 function callBackend(action, payload) {
   const epoch = memoEpoch;
-  if (!READS[action]) { memo = {}; memoEpoch++; lastStamp = ''; }
-  return rawCall(action, payload).then(function (data) {
-    if (READS[action] && !NO_MEMO[action] && epoch === memoEpoch) memo[memoKey(action, payload)] = { at: Date.now(), data: data };
+  if (!READS[action]) memoDirty();
+  const memoable = READS[action] && !NO_MEMO[action], k = memoable ? memoKey(action, payload) : '';
+  if (memoable && inflight[k] && inflight[k].epoch === epoch) return inflight[k].p;
+  const p = rawCall(action, payload).then(function (data) {
+    if (memoable && epoch === memoEpoch) { memo[k] = { at: Date.now(), data: data }; if (typeof memoSaveSoon === 'function') memoSaveSoon(); }
     return data;
   }, function (e) {
     if (e && e.code === 'AUTH') signOut();
     throw e;
   });
+  if (memoable) { inflight[k] = { epoch: epoch, p: p }; const clear = function () { if (inflight[k] && inflight[k].p === p) delete inflight[k]; }; p.then(clear, clear); }
+  return p;
 }
 
 /** A read that may be answered from the memo when it is younger than maxAgeMs (used for form pick-lists). */
@@ -113,12 +125,14 @@ function userIsBusy() {
 function swr(action, payload, render) {
   const key = memoKey(action, payload);
   const hit = memo[key];
-  const myNav = navId, t0 = performance.now();
+  const myNav = navId, t0 = performance.now(), e0 = memoEpoch;
   if (hit) { render(hit.data, true); perfScreen(action, 0, true); }
   if (hit && Date.now() - hit.at < 15000) return Promise.resolve(hit.data);
+  if (hit && outboxPending()) return Promise.resolve(hit.data);         // changes are still being sent: the server's answer would be older than what is on screen
   if (!hit) $('view').innerHTML = '<div class="empty">Loading…</div>';   // nothing to show yet: never leave the previous screen under the new tab
   return callBackend(action, payload).then(function (data) {
     if (myNav !== navId) return data;                                   // they navigated elsewhere while we waited
+    if (hit && (e0 !== memoEpoch || outboxPending())) return data;      // something was saved meanwhile: this answer may be older than the screen
     if (!hit) { render(data, false); perfScreen(action, performance.now() - t0, false); }
     else if (JSON.stringify(hit.data) !== JSON.stringify(data) && !userIsBusy()) render(data, false);
     return data;
@@ -234,8 +248,14 @@ function rawCall0_(action, payload) {
     const script = document.createElement('script');
     let done = false;
     function cleanup() { try { delete window[cb]; } catch (e) { window[cb] = undefined; } if (script.parentNode) script.parentNode.removeChild(script); }
-    window[cb] = function (res) { if (done) return; done = true; cleanup(); resolve(res); };
-    script.onerror = function () { if (done) return; done = true; cleanup(); reject(new Error('Could not reach the server. Check your connection.')); };
+    window[cb] = function (res) { if (done) return; done = true; clearTimeout(timer); cleanup(); resolve(res); };
+    const lost = function (why) {
+      if (done) return; done = true; clearTimeout(timer); cleanup();
+      window[cb] = function () { /* an answer that arrives late is ignored */ };
+      const e = new Error(why || 'Could not reach the server. Check your connection.'); e.network = true; reject(e);   // network: a repeat of the same send is safe to try later
+    };
+    const timer = setTimeout(function () { lost('The server took too long to answer. Check your connection.'); }, netTimeoutMs());
+    script.onerror = function () { lost(); };
     const data = Object.assign({ sessionToken: sessionToken || undefined, googleIdToken: sessionToken ? undefined : idToken, asRole: activeRole, officeId: activeOffice || undefined }, payload || {});
     script.src = CONFIG.APPS_SCRIPT_URL + '?action=' + encodeURIComponent(action) + '&callback=' + encodeURIComponent(cb) +
       '&data=' + encodeURIComponent(JSON.stringify(data)) + '&_=' + Date.now();
@@ -357,7 +377,7 @@ const photoQueue = (function () {
     if (!it) { paint(); wake(); return; }
     running = true; it.state = 'UPLOADING'; paint();
     step(it).then(function () {
-      items = items.filter(function (x) { return x !== it; }); delete files[it.id]; save(); memo = {}; toast('Photo uploaded.');
+      items = items.filter(function (x) { return x !== it; }); delete files[it.id]; save(); memoDirty(); toast('Photo uploaded.');
     }).catch(function (e) {
       if (e && e.code === 'AUTH') { it.state = 'PAUSED'; return; }                     // signed out: carries on after the next sign-in
       it.tries = (it.tries || 0) + 1;
@@ -582,12 +602,10 @@ function loginWithGoogle(credential) {
 function startSession(withSync) {
   $('signInError').textContent = '';
   memo = {}; memoEpoch++; lastStamp = '';
-  // The two requests run side by side; the home answer is remembered so the first screen draws without asking again.
-  Promise.all([callBackend('home'), loadOpts()]).then(function (r) {
-    const h = r[0]; me = h; OPTS = r[1];
-    return syncOpts(h.optionsStamp).then(function () { return r; });   // lists changed on the server since this phone saved them: reload before the first screen
-  }).then(function (r) {
-    const h = r[0];
+  // A device that was used before opens from its last copy at once (the home answer and the lists kept in this browser); the real answers arrive behind it.
+  const warm = typeof fastWarmStart === 'function' ? fastWarmStart() : null;
+  let opened = false;
+  const open = function (h) {
     $('signedOut').classList.add('hidden');
     $('tabs').classList.remove('hidden'); $('view').classList.remove('hidden');
     $('bellBtn').classList.remove('hidden'); $('signOutBtn').classList.remove('hidden'); $('helpBtn').classList.remove('hidden');
@@ -604,14 +622,29 @@ function startSession(withSync) {
     buildTabs(); setTopbarVar();
     go(startTab());
     clearInterval(pollTimer);
-    pollTimer = setInterval(poll, (OPTS.ui.pollSeconds || CONFIG.POLL_SECONDS || 45) * 1000);
+    pollTimer = setInterval(poll, (OPTS.ui.pollSeconds || CONFIG.POLL_SECONDS || 45) * 1000 * (netSlow() ? 2 : 1));
     updateBadge();
     if (withSync) setTimeout(backgroundSync, 300);
-    setTimeout(function () { photoQueue.resume(); if (typeof invoiceOutboxStart === 'function') invoiceOutboxStart(); }, 1500);   // finish any photo that was still uploading when the app was last closed
+    setTimeout(function () { photoQueue.resume(); if (typeof invoiceOutboxStart === 'function') invoiceOutboxStart(); if (typeof obDrain === 'function') obDrain(); }, 1500);   // finish any photo or change that was still waiting when the app was last closed
     setTimeout(prefetch, 900);
     setTimeout(recordLocation, 1500);
+  };
+  if (warm) { me = warm.home; OPTS = warm.opts; opened = true; open(warm.home); }
+  // The two requests run side by side; the home answer is remembered so the first screen draws without asking again.
+  Promise.all([callBackend('home'), loadOpts()]).then(function (r) {
+    const h = r[0]; me = h; OPTS = r[1];
+    return syncOpts(h.optionsStamp).then(function () { return r; });   // lists changed on the server since this phone saved them: reload before the first screen
+  }).then(function (r) {
+    const h = r[0];
+    if (opened) {                                                      // already on screen from the copy: only a change of role or offices needs the screen to be rebuilt
+      if (h.role !== warm.home.role || JSON.stringify(h.roles) !== JSON.stringify(warm.home.roles)) { memo = {}; memoEpoch++; memo[memoKey('home', {})] = { at: Date.now(), data: h }; open(h); }
+      else { $('userLabel').textContent = h.name + (h.roles.length > 1 ? '' : ' · ' + h.role.toLowerCase()) + (h.officeInfo && h.officeInfo.multi && h.officeInfo.label ? ' · ' + h.officeInfo.label : ''); setupOfficeSwitch(h); updateBadge(); }
+      return;
+    }
+    open(h);
   }).catch(function (e) {
     if (e.code === 'AUTH') return;                       // callBackend already signed out
+    if (opened) { toast('No connection: showing the last copy on this phone.', true); return; }
     if (e.code === 'NOT_LISTED') { saveSession(''); $('view').classList.add('hidden'); showSignIn(e.message); return; }
     $('signedOut').classList.remove('hidden'); $('view').classList.add('hidden');
     $('signInError').textContent = e.message;
@@ -649,14 +682,22 @@ function startTab() {
   return ok ? last : (me.role === 'SUPERVISOR' ? 'home' : me.role === 'MANAGER' ? 'manage' : me.role === 'TECH' ? 'techdesk' : 'dash');
 }
 
-/** Warm the screens people open next, in the background, one at a time, so the tab switch is instant. */
+/**
+ * Warm the screens people open next, in the background, one at a time, so a tab switch is instant. Anything missing, or older than ten minutes
+ * (or marked old after a change), is loaded again; what was just loaded is left alone. The payloads are the ones the screens ask with.
+ */
 function prefetch() {
-  const plan = { SUPERVISOR: [['stays', {}], ['transfers', {}], ['team', {}], ['picker', {}]], ADMIN: [['transfers', {}], ['flags', {}], ['issues', { openOnly: true }], ['supervisorList', {}], ['picker', {}]], OPS: [['flags', {}], ['issues', { openOnly: true }]] }[me.role] || [];
+  const pen = { month: '', status: '', supervisorId: '' };
+  const plan = {
+    SUPERVISOR: [['home', {}], ['stays', {}], ['transfers', {}], ['team', {}], ['picker', {}], ['issues', { openOnly: true }], ['invoices', {}], ['penalties', pen]],
+    ADMIN: [['home', {}], ['transfers', {}], ['issues', { openOnly: true }], ['flags', {}], ['supervisorList', {}], ['picker', {}], ['invoices', {}], ['penalties', pen]],
+    OPS: [['home', {}], ['issues', { openOnly: true }], ['flags', {}], ['penalties', pen]]
+  }[me && me.role] || [];
   let i = 0;
   (function next() {
-    if (!me || i >= plan.length || document.hidden) return;
-    const p = plan[i++];
-    if (memo[memoKey(p[0], p[1])]) return next();
+    if (!me || i >= plan.length || (netSlow() && i >= 3) || document.hidden || navigator.onLine === false || (typeof outboxPending === 'function' && outboxPending())) return;
+    const p = plan[i++], hit = memo[memoKey(p[0], p[1])];
+    if (hit && Date.now() - hit.at < 600000) return next();
     callBackend(p[0], p[1]).catch(function () { /* optional */ }).then(function () { setTimeout(next, 250); });
   })();
 }
@@ -665,11 +706,12 @@ function prefetch() {
 function backgroundSync() {
   if (!me) return;
   callBackend('sync').then(function (r) {
-    if (r && r.moved && r.moved.length) { memo = {}; if (!userIsBusy()) go(tab, true); }
+    if (r && r.moved && r.moved.length) { memoDirty(); if (!userIsBusy()) go(tab, true); }
   }).catch(function () { /* the 5-minute job will catch up */ });
 }
 
 function signOut() {
+  if (typeof fastSignOut === 'function') fastSignOut();
   saveSession(''); idToken = null; me = null; clearInterval(pollTimer); memo = {}; memoEpoch++;
   $('signedOut').classList.remove('hidden');
   ['tabs', 'view', 'bellBtn', 'signOutBtn', 'helpBtn'].forEach(function (i) { $(i).classList.add('hidden'); });
@@ -683,6 +725,7 @@ function signOut() {
 function updateBadge() {
   const b = $('bellBadge');
   if (me && me.unread > 0) { b.textContent = me.unread; b.classList.remove('hidden'); } else b.classList.add('hidden');
+  if (typeof syncPenaltyTab === 'function') syncPenaltyTab();
 }
 
 /** Every 45 seconds: one tiny request. The screen only redraws if the server says something changed. */
@@ -696,7 +739,7 @@ function poll() {
     const changed = lastStamp && p.stamp !== lastStamp;
     lastStamp = p.stamp;
     if (changed) {
-      memo = {};
+      memoDirty();
       if (['home', 'dash', 'transfers', 'team', 'flags', 'issues', 'techdesk'].indexOf(tab) !== -1 && !userIsBusy()) go(tab, true);
     }
     if (++pulseCount % 3 === 0) backgroundSync();
@@ -707,9 +750,9 @@ document.addEventListener('visibilitychange', function () { if (!document.hidden
 // ===================== NAV =====================
 
 const TABS = {
-  SUPERVISOR: [['home', 'Home'], ['team', 'Assign'], ['transfers', 'Transfers'], ['invoices', 'Invoices'], ['issue', 'Report issue'], ['search', 'Search']],
-  ADMIN: [['dash', 'Dashboard'], ['transfers', 'Transfers'], ['issues', 'Issues'], ['assets', 'Assets'], ['flags', 'Needs attention'], ['schedule', 'Schedule'], ['invoices', 'Invoices'], ['techdesk', 'Tech team'], ['sups', 'Supervisors'], ['search', 'Search'], ['reports', 'Reports']],
-  OPS: [['dash', 'Dashboard'], ['issues', 'Issues'], ['flags', 'Needs attention'], ['schedule', 'Schedule'], ['techdesk', 'Tech team'], ['search', 'Search'], ['reports', 'Reports']],
+  SUPERVISOR: [['home', 'Home'], ['team', 'Assign'], ['transfers', 'Transfers'], ['issues', 'Issues'], ['invoices', 'Invoices'], ['penalties', 'Penalties'], ['issue', 'Report issue'], ['search', 'Search']],
+  ADMIN: [['dash', 'Dashboard'], ['transfers', 'Transfers'], ['issues', 'Issues'], ['assets', 'Assets'], ['flags', 'Needs attention'], ['schedule', 'Schedule'], ['invoices', 'Invoices'], ['penalties', 'Penalties'], ['techdesk', 'Tech team'], ['sups', 'Supervisors'], ['search', 'Search'], ['reports', 'Reports']],
+  OPS: [['dash', 'Dashboard'], ['issues', 'Issues'], ['flags', 'Needs attention'], ['penalties', 'Penalties'], ['schedule', 'Schedule'], ['techdesk', 'Tech team'], ['search', 'Search'], ['reports', 'Reports']],
   MANAGER: [['manage', 'Manage']],
   TECH: [['techdesk', 'Tech desk']]
 };
@@ -771,6 +814,7 @@ VIEWS.home = function () {
     if (h.invoicesDue) {
       html += '<div class="banner warn"><div class="grow"><b>' + h.invoicesDue + (h.invoicesDue > 1 ? ' invoices' : ' invoice') + ' asked for</b><div class="small">An admin needs the invoice of a transfer. Send a picture of it.</div></div><button class="btn" data-go="invoices">Open Invoices</button></div>';
     }
+    if (typeof penaltyHomeBanners === 'function') html += penaltyHomeBanners(h);
     if (h.team && (h.team.dueConfirm || h.team.assignAlert)) {
       html += '<div class="banner warn"><div class="grow"><b>Assignments need attention</b><div class="small">' +
         (h.team.assignAlert ? h.team.unassignedDevices + ' device(s) not assigned to anyone yet. ' : '') +
@@ -1038,14 +1082,15 @@ VIEWS.dash = function () {
       tile(h.provisional, 'Awaiting acknowledgement', h.provisional ? 'warn' : '', 'flags') +
       tile(h.overdueCheckins, 'Overdue check-ins', h.overdueCheckins ? 'warn' : '', 'flags') +
       tile(h.invoicesToReview || 0, 'Invoices to review', h.invoicesToReview ? 'warn' : '', 'invoices') +
+      (h.penaltiesOn ? tile(h.penaltiesToReview || 0, 'Penalties to review', h.penaltiesToReview ? 'warn' : '', 'penalties') : '') +
       tile(d.office.devices + ' / ' + d.office.sdCards + (d.extraCategories || []).map(function (c) { return ' / ' + ((d.office.extras || {})[c.code] || 0); }).join(''), 'Office stock (devices / SD' + (d.extraCategories || []).map(function (c) { return ' / ' + c.label.toLowerCase(); }).join('') + ') · tap to see them', '', 'office') + '</div>';
     html += '<div class="card"><h2>Properties: working devices vs workforce today</h2><div class="tablewrap"><table><thead><tr><th>Property</th><th>Supervisor</th>' +
-      '<th class="num">Workforce</th><th class="num">Working devices</th><th class="num">Needed</th><th>Device gap</th><th class="num">Faulty</th><th class="num">SD cards</th><th class="num">SD needed</th><th>SD gap</th>' + (d.extraCategories || []).map(function (c) { return '<th class="num">' + esc(c.label) + ' (working / faulty)</th>'; }).join('') + '</tr></thead><tbody>' +
+      '<th class="num">On site now</th><th class="num">Working devices</th><th class="num">Needed</th><th>Device gap</th><th class="num">Faulty</th><th class="num">SD cards</th><th class="num">SD needed</th><th>SD gap</th>' + (d.extraCategories || []).map(function (c) { return '<th class="num">' + esc(c.label) + ' (working / faulty)</th>'; }).join('') + (h.penaltiesOn ? '<th>Ask the supervisor</th>' : '') + '</tr></thead><tbody>' +
       d.properties.map(function (p) {
         const g = function (n) { return n < 0 ? '<span class="gap-neg">Short ' + (-n) + '</span>' : n > 0 ? '<span class="gap-pos">Surplus ' + n + '</span>' : 'OK'; };
-        return '<tr class="clickrow" data-prop="' + esc(p.locationId) + '"><td><b>' + esc(p.name) + '</b> <span class="small" style="color:var(--brand)">details ›</span><div class="small muted">' + esc(p.locationId) + '</div></td><td>' + esc(p.supervisors.join(', ') || '-') + '</td><td class="num">' + p.workforce +
+        return '<tr class="clickrow" data-prop="' + esc(p.locationId) + '"><td><b>' + esc(p.name) + '</b> <span class="small" style="color:var(--brand)">details ›</span><div class="small muted">' + esc(p.locationId) + '</div></td><td>' + esc(p.supervisors.join(', ') || '-') + '</td><td class="num">' + p.workforce + shiftSplit(p.workforceBy) +
           '</td><td class="num">' + p.devicesWorking + '</td><td class="num">' + p.devicesRequired + '</td><td>' + g(p.deviceGap) + '</td><td class="num">' + p.devicesFaulty +
-          '</td><td class="num">' + p.sdCards + '</td><td class="num">' + p.sdRequired + '</td><td>' + g(p.sdGap) + '</td>' + (d.extraCategories || []).map(function (c) { const x = (p.extras || {})[c.code] || { working: 0, faulty: 0 }; return '<td class="num">' + x.working + (x.faulty ? ' / <span class="gap-neg">' + x.faulty + '</span>' : '') + '</td>'; }).join('') + '</tr>';
+          '</td><td class="num">' + p.sdCards + '</td><td class="num">' + p.sdRequired + '</td><td>' + g(p.sdGap) + '</td>' + (d.extraCategories || []).map(function (c) { const x = (p.extras || {})[c.code] || { working: 0, faulty: 0 }; return '<td class="num">' + x.working + (x.faulty ? ' / <span class="gap-neg">' + x.faulty + '</span>' : '') + '</td>'; }).join('') + (h.penaltiesOn ? '<td>' + locActionCell(p, h) + '</td>' : '') + '</tr>';
       }).join('') + '</tbody></table></div>' +
       (d.unlocated ? '<p class="small muted">' + d.unlocated + ' asset(s) are with a supervisor whose location is not known yet, or at a property that is not in the list.</p>' : '') +
       '<p class="small muted">Workforce is today\'s attendance by Location ID. Only working devices count towards the requirement. ' + (me.role === 'ADMIN' ? '<button class="linkBtn" data-refreshcfg>Refresh settings</button> (settings are cached for a couple of minutes)' : '') + '</p></div>';
@@ -1077,13 +1122,13 @@ VIEWS.property = function (locationId) {
     const section = function (title, cls, list, showWorker) { return '<h3>' + title + ' (' + list.length + ')</h3>' + assetRows(list, showWorker); };
     let html = '<div class="stickyHead flat"><div class="row spread"><div><h2 style="margin:0">' + esc(d.name) + '</h2><div class="small muted">' + esc(d.locationId) + ' · ' +
       (d.supervisors.length ? 'Supervisor: ' + d.supervisors.map(function (x) { return esc(x.name); }).join(', ') : 'no supervisor there now') + '</div></div><button class="btn secondary" data-go="dash">‹ Dashboard</button></div></div>';
-    html += '<div class="tiles">' + tile(c.workforce + (c.unregistered ? ' <span class="small">(' + c.unregistered + ' not registered)</span>' : ''), 'Workforce today') +
+    html += '<div class="tiles">' + tile(c.workforce + (c.unregistered ? ' <span class="small">(' + c.unregistered + ' not registered)</span>' : ''), 'On site now') +
       tile(c.devicesWorking + ' / ' + c.devicesRequired, 'Working devices / needed · ' + gap(c.deviceGap).replace(/<[^>]+>/g, ''), c.deviceGap < 0 ? 'bad' : '') +
       tile(c.sdWorking + ' / ' + c.sdRequired, 'SD cards / needed · ' + gap(c.sdGap).replace(/<[^>]+>/g, ''), c.sdGap < 0 ? 'warn' : '') +
       tile(d.devices.faulty.length + d.sdCards.faulty.length, 'Faulty (devices + SD)', d.devices.faulty.length + d.sdCards.faulty.length ? 'warn' : '') +
       tile(d.devices.idle.length, 'Idle working devices') + tile(d.issues.length, 'Open issues', d.issues.length ? 'warn' : '') + '</div>';
     if (d.withoutDevice.length) html += '<div class="banner warn"><div class="grow"><b>' + d.withoutDevice.length + ' present worker(s) have no device:</b> ' + d.withoutDevice.map(esc).join(', ') + '</div></div>';
-    html += '<div class="card"><h2>Workforce today, and what each person has</h2>' + (d.workforce.length ? '<div class="tablewrap"><table><thead><tr><th>Person</th><th>Device</th><th>SD cards</th></tr></thead><tbody>' + d.workforce.map(person).join('') + '</tbody></table></div>' : emptyState('Nobody has scanned in here today.')) +
+    html += '<div class="card"><h2>On site now, and what each person has</h2>' + (d.workforce.length ? '<div class="tablewrap"><table><thead><tr><th>Person</th><th>Device</th><th>SD cards</th></tr></thead><tbody>' + d.workforce.map(person).join('') + '</tbody></table></div>' : emptyState('Nobody is on site here now (scanned in and not checked out).')) +
       (d.absentWithItems.length ? '<h3>Not scanned in today, still holding items</h3><div class="tablewrap"><table><tbody>' + d.absentWithItems.map(person).join('') + '</tbody></table></div>' : '') + '</div>';
     html += '<div class="card"><h2>Devices</h2>' + section('Faulty', 'bad', d.devices.faulty) + section('Missing', 'bad', d.devices.missing) + section('Idle (working, nobody has it)', '', d.devices.idle) + section('Assigned', '', d.devices.assigned, true) + '</div>';
     (d.extras || []).forEach(function (x) { html += '<div class="card"><h2>' + esc(x.label) + '</h2>' + section('Faulty', 'bad', x.group.faulty) + section('Missing', 'bad', x.group.missing) + section('Idle (working, nobody has it)', '', x.group.idle) + section('With a supervisor or worker', '', x.group.assigned, true) + '</div>'; });
@@ -1203,7 +1248,7 @@ function wireGrid(t, preselect) {
     const list = order.filter(function (id) { return !q || (names[id].name + ' ' + id + ' ' + (names[id].email || '')).toLowerCase().indexOf(q) !== -1; });
     $('wkGrid').innerHTML = list.length ? list.map(function (id) {
       const w = names[id], ids = CATS.reduce(function (acc, c) { return acc.concat(baseline[id][c]); }, []).join(',');
-      return '<div class="wk' + (w.present ? '' : ' absent') + '"><div class="row spread" style="align-items:flex-start"><div><b>' + esc(w.name) + '</b> <span class="small muted">' + esc(w.shift || '') + '</span>' +
+      return '<div class="wk' + (w.present ? '' : ' absent') + '"><div class="row spread" style="align-items:flex-start"><div><b>' + esc(w.name) + '</b> <span class="small muted">' + esc(w.shift || '') + '</span>' + shiftTag(w.shiftKind, w.checkedOutAt) +
         (w.registered === false ? '<div style="margin-top:3px">' + pill('Not registered in the Awign app yet', 'warn') + '</div>' : '') +
         '<div style="margin-top:3px">' +
         (w.team ? pill('Your team', 'info') + ' ' : (w.assignable ? pill('Scanned in at this property', '') + ' ' : '')) +
@@ -1224,7 +1269,7 @@ function wireGrid(t, preselect) {
   barSet('<span id="barCount" class="grow"></span><button class="btn small" data-bar="save">Save changes</button><button class="btn secondary small" data-bar="reset">Discard</button>', {
     save: function () {
       const d = diff();
-      callBackend('assignMany', { pairs: d.pairs, remove: d.removed }).then(function (r) {
+      fastCall('assignMany', { pairs: d.pairs, remove: d.removed }, { label: 'The assignments' }).then(function (r) {
         teamDirty = false; homeSel.clear();
         toast(r.assigned + ' assigned' + (r.changed ? ', ' + r.changed + ' moved' : '') + (r.removed ? ', ' + r.removed + ' removed' : '') + (r.unchanged ? ', ' + r.unchanged + ' unchanged' : ''));
         go('team', true);
@@ -1341,6 +1386,17 @@ function wireGrid(t, preselect) {
   paint();
 }
 
+/** "Full time 8 · Day 2 · Night 2" under a workforce number, when more than one kind is on site, or the only kind is not full time. */
+const SHIFT_LABEL = { FULL: 'Full time', DAY: 'Day', NIGHT: 'Night' };
+function shiftSplit(by) {
+  if (!by) return '';
+  const parts = ['FULL', 'DAY', 'NIGHT'].filter(function (k) { return by[k]; });
+  return parts.length > 1 || (parts.length === 1 && parts[0] !== 'FULL') ? '<div class="small muted">' + parts.map(function (k) { return SHIFT_LABEL[k] + ' ' + by[k]; }).join(' · ') + '</div>' : '';
+}
+function shiftTag(kind, checkedOutAt) {
+  return (kind && kind !== 'FULL' ? ' ' + pill(SHIFT_LABEL[kind] || kind, kind === 'NIGHT' ? 'info' : '') : '') + (checkedOutAt ? ' <span class="small muted">checked out ' + esc(fmt(checkedOutAt)) + '</span>' : '');
+}
+
 // ---- Transfers ----
 // Any admin for a transfer to the Office; the named supervisor or a supervisor at the same property for a transfer to a supervisor.
 function canReceive(t) {
@@ -1350,10 +1406,14 @@ function canReceive(t) {
 }
 
 function transferCard(t) {
+  if (t.pending) {                                                       // just sent from this phone: the server has not answered yet
+    return '<div class="card"><div class="row spread"><div><b>Sending…</b> · ' + esc(t.from) + ' → ' + esc(t.to) + '<div class="small muted">' + t.items.length + ' item(s) · saved on this phone, going to the server now</div></div>' + pill('Sending', 'info') + '</div>' +
+      '<div class="chips">' + t.items.map(function (i) { return '<span class="chip">' + esc(i.assetId) + '</span>'; }).join('') + '</div></div>';
+  }
   const short = t.items.filter(function (i) { return i.status === 'SHORT'; });
   const statusPill = t.status === 'IN_TRANSIT' ? pill('In transit', 'info') : t.status === 'PARTIAL' ? pill('SHORT RECEIPT', 'bad') : t.status === 'RECEIVED' ? pill('Received', 'ok') : pill(t.status, '');
   let html = '<div class="card' + (t.status === 'PARTIAL' ? ' flag HIGH' : t.faulty ? ' faultyCard' : '') + '"><div class="row spread"><div><b>' + esc(t.id) + '</b> · ' + esc(t.from) + ' → ' + esc(t.to) +
-    '<div class="small muted">' + (t.fromLocation ? esc(t.fromLocation) + ' · ' : '') + 'sent ' + fmt(t.createdAt) + ' by ' + esc(t.sentBy) + (t.receivedAt ? ' · received ' + fmt(t.receivedAt) + ' by ' + esc(t.receivedBy) : '') + '</div></div><div class="row" style="gap:4px;flex-wrap:wrap;justify-content:flex-end">' + (t.tech ? pill('Tracked in Issues', 'info') : '') + (t.faulty ? pill('Faulty devices', 'bad') : '') + statusPill + '</div></div>';
+    '<div class="small muted">' + (t.fromLocation ? esc(t.fromLocation) + ' · ' : '') + 'sent ' + fmt(t.createdAt) + ' by ' + esc(t.sentBy) + (t.receivedAt ? ' · received ' + fmt(t.receivedAt) + ' by ' + esc(t.receivedBy) : '') + '</div></div><div class="row" style="gap:4px;flex-wrap:wrap;justify-content:flex-end">' + (t.tech ? pill('Tracked in Issues', 'info') : '') + (t.replaces ? pill('Replacement for ' + t.replaces.split(',').join(', '), 'info') : '') + (t.faulty ? pill('Faulty devices', 'bad') : '') + statusPill + '</div></div>';
   if (short.length) {
     html += '<div class="banner bad" style="margin-top:10px"><div class="grow"><b>Not received (' + short.length + ' of ' + t.items.length + '):</b> ' + short.map(function (i) { return esc(i.assetId); }).join(', ') +
       '<div class="small">Still recorded with the sender until an admin resolves it.</div></div></div>';
@@ -1370,7 +1430,15 @@ function transferCard(t) {
     const todo = t.items.filter(function (i) { return i.faulty && i.stage === 'OFFICE'; });
     if (todo.length) html += '<div class="banner info" style="margin-top:10px"><div class="grow"><b>What next for the faulty devices?</b>' + todo.map(function (i) { return '<div style="margin-top:8px"><div class="small"><b>' + esc(i.assetId) + '</b> · ' + esc(i.issueType) + ' ' + pill('at office', 'info') + '</div>' + flowButtons({ issueId: i.issueId, assetId: i.assetId, stage: i.stage, handoverId: '' }) + '</div>'; }).join('') + '</div></div>';
   }
+  if (t.status === 'IN_TRANSIT' && t.reachedAt) {
+    const left = t.receipt ? t.receipt.left : 0, timed = t.receipt && t.receipt.minutes > 0;
+    html += canReceive(t) && me.role === 'SUPERVISOR'
+      ? '<div class="banner ' + (timed && left <= 0 ? 'bad' : 'warn') + '" style="margin-top:10px"><div class="grow"><b>' + esc(t.reachedBy || 'An admin') + ' says this has reached you.</b><div class="small">' +
+        (timed ? (left > 0 ? 'Confirm receipt within <b>' + left + ' min</b> (by ' + esc(fmt(t.receipt.due)) + ').' : 'The time is up: confirm it now, it will be noted as late.') : 'Please confirm receipt now.') + '</div></div></div>'
+      : '<div class="small muted" style="margin-top:8px">' + pill('Marked as reached', 'info') + ' by ' + esc(t.reachedBy || 'an admin') + ' at ' + esc(fmt(t.reachedAt)) + (timed ? (left > 0 ? ' · ' + left + ' min left for ' + esc(t.to) + ' to confirm' : ' · the time for ' + esc(t.to) + ' to confirm is up') : '') + '</div>';
+  }
   html += '<div class="row" style="margin-top:8px">';
+  if (t.status === 'IN_TRANSIT' && t.canReach) html += '<button class="btn secondary small" data-reached="' + esc(t.id) + '" data-reachto="' + esc(t.to) + '" data-reachmin="' + (t.receipt ? t.receipt.minutes : 0) + '">Item reached</button>';
   if (t.status === 'IN_TRANSIT' && canReceive(t)) html += '<button class="btn small" data-receive="' + esc(t.id) + '">Confirm receipt</button>';
   else if (t.status === 'IN_TRANSIT') html += '<span class="small muted">Waiting for ' + esc(t.to) + ' to confirm</span>';
   if (t.status === 'IN_TRANSIT' && (me.role === 'ADMIN' || t.sentBy === me.name)) html += '<button class="btn secondary small" data-cancel="' + esc(t.id) + '">Cancel</button>';
@@ -1422,10 +1490,11 @@ function officeAgo(iso) {
   return m < 1 ? 'just now' : m < 60 ? m + ' min ago' : Math.floor(m / 60) + ' h ' + (m % 60) + ' min ago';
 }
 function loadOffice() {
-  const myNav = navId;
-  if (officeData) paintOffice();
+  const myNav = navId, hit = memo[memoKey('officeBatches', {})], sup = memo[memoKey('supervisorList', {})];
+  if (hit) { officeData = hit.data; if (sup) officeSup = sup.data; paintOffice(); if (outboxPending()) return Promise.resolve(); }   // the copy (with our own changes in it) first
+  else if (officeData) paintOffice();
   return Promise.all([callBackend('officeBatches'), callBackend('supervisorList')]).then(function (r) {
-    if (myNav !== navId) return;
+    if (myNav !== navId || outboxPending()) return;
     officeData = r[0]; officeSup = r[1]; paintOffice();
   }).catch(function (e) { const h = $('officeBatches'); if (h && !officeData) h.innerHTML = '<div class="card"><div class="small muted">Could not load what is waiting in the Office. ' + esc(e && e.message || '') + '</div></div>'; });
 }
@@ -1492,15 +1561,15 @@ function paintOffice() {
       const p = picked(btn.dataset.onext, btn.dataset.sd === '1'), stage = p.items[0].stage;
       if (btn.dataset.sd === '1' && stage !== 'UPLOADED') {
         return busy(btn, function () {
-          return callBackend('officeStep', { assetIds: ids(p), step: stage === 'RECEIVED' ? 'START' : 'DONE' }).then(function () {
+          return fastCall('officeStep', { assetIds: ids(p), step: stage === 'RECEIVED' ? 'START' : 'DONE' }, { label: 'The SD card step' }).then(function () {
             toast(p.items.length + ' SD card(s): ' + (stage === 'RECEIVED' ? 'upload started' : 'upload complete')); return loadOffice();
           });
         });
       }
       const d = host.querySelector('[data-odest="' + p.b.id + '"]');
       busy(btn, function () {
-        return callBackend('createTransfer', { toType: 'SUPERVISOR', toId: d ? d.value : p.b.fromId, assetIds: ids(p), note: 'Sent back from the Office' }).then(function (r) {
-          toast(r.itemCount + ' item(s) sent back · ' + r.transferId); go('transfers', true);
+        return fastCall('createTransfer', { toType: 'SUPERVISOR', toId: d ? d.value : p.b.fromId, assetIds: ids(p), note: 'Sent back from the Office' }, { toName: d && d.selectedOptions[0] ? d.selectedOptions[0].textContent : '', label: 'Sending back' }).then(function (r) {
+          toast(r.itemCount + ' item(s) sent back' + (r.transferId ? ' · ' + r.transferId : '')); go('transfers', true);
         });
       });
     });
@@ -1513,14 +1582,14 @@ function paintOffice() {
         setTimeout(function () { if (btn.isConnected && btn.dataset.armed) paintOffice(); }, 4000); return;
       }
       busy(btn, function () {
-        return callBackend('officeStep', { assetIds: ids(p), step: 'KEEP' }).then(function () { toast(p.items.length + ' kept in the Office'); return loadOffice(); });
+        return fastCall('officeStep', { assetIds: ids(p), step: 'KEEP' }, { label: 'Keeping in the Office' }).then(function () { toast(p.items.length + ' kept in the Office'); return loadOffice(); });
       });
     });
   });
   host.querySelectorAll('[data-oback]').forEach(function (btn) {
     btn.addEventListener('click', function () {
       const p = picked(btn.dataset.oback, true);
-      busy(btn, function () { return callBackend('officeStep', { assetIds: ids(p), step: 'UNDO' }).then(loadOffice); });
+      busy(btn, function () { return fastCall('officeStep', { assetIds: ids(p), step: 'UNDO' }, { label: 'Stepping back' }).then(loadOffice); });
     });
   });
 }
@@ -1546,26 +1615,36 @@ function openReceive(transferId) {
   const t = currentTransfers.find(function (x) { return x.id === transferId; });
   const items = t.items.filter(function (i) { return i.status === 'IN_TRANSIT'; });
   openModal('<div class="row spread"><h2>Confirm receipt · ' + esc(t.id) + '</h2><button class="linkBtn" data-close>Close</button></div>' +
-    '<p class="small muted">Tick only what you physically received from ' + esc(t.from) + '. Anything left unticked is flagged as short.</p>' +
+    '<p class="small muted">Tick only what you physically received from ' + esc(t.from) + '. Anything left unticked is flagged as short.' + (items.some(function (i) { return i.faulty; }) ? ' For a faulty device, also say what state it is in and what was not working.' : '') + '</p>' +
     '<div class="row recvHead"><button class="btn secondary small" id="tickAll">Tick all</button><span id="tally" class="small muted"></span></div><div id="recvList"></div>' +
-    '<div class="row recvFoot"><button class="btn" id="confirmRecv">Confirm receipt</button></div>', function (box) {
+    '<div class="small" id="recvMsg" style="color:var(--bad);margin-top:6px"></div><div class="row recvFoot"><button class="btn" id="confirmRecv">Confirm receipt</button></div>', function (box) {
     const list = box.querySelector('#recvList');
     list.innerHTML = items.map(function (i) {
-      return '<label class="item" style="cursor:pointer"><input type="checkbox" value="' + esc(i.assetId) + '" style="width:20px;height:20px"><div class="grow"><b>' + esc(i.assetId) + '</b> <span class="muted">' + esc(catLabel(i.category)) + '</span></div></label>';
+      return '<div class="recvItem" data-asset="' + esc(i.assetId) + '"><label class="item" style="cursor:pointer"><input type="checkbox" value="' + esc(i.assetId) + '" style="width:20px;height:20px"><div class="grow"><b>' + esc(i.assetId) + '</b> <span class="muted">' + esc(catLabel(i.category)) + '</span>' + (i.faulty ? ' ' + pill('faulty: ' + (i.issueType || ''), 'bad') : '') + '</div></label>' +
+        (i.faulty && typeof conditionBlock === 'function' ? '<div class="condWrap" style="margin:0 0 8px 30px">' + conditionBlock(i.category, i.issueType) + '</div>' : '') + '</div>';
     }).join('');
+    if (typeof wireCondition === 'function') wireCondition(list);
     const tally = function () {
-      const n = list.querySelectorAll('input:checked').length;
+      const n = list.querySelectorAll('input[type=checkbox]:checked').length;
       box.querySelector('#tally').innerHTML = n + ' of ' + items.length + ' ticked' + (n < items.length ? ' · <b style="color:var(--bad)">' + (items.length - n) + ' will be flagged short</b>' : '');
       box.querySelector('#confirmRecv').textContent = n ? 'Confirm receipt' : 'Nothing arrived';
     };
     list.addEventListener('change', tally);
-    box.querySelector('#tickAll').addEventListener('click', function () { list.querySelectorAll('input').forEach(function (c) { c.checked = true; }); tally(); });
+    box.querySelector('#tickAll').addEventListener('click', function () { list.querySelectorAll('input[type=checkbox]').forEach(function (c) { c.checked = true; }); tally(); });
     tally();
     box.querySelector('#confirmRecv').addEventListener('click', function (e) {
-      const ids = Array.from(list.querySelectorAll('input:checked')).map(function (c) { return c.value; });
+      const ids = Array.from(list.querySelectorAll('input[type=checkbox]:checked')).map(function (c) { return c.value; });
+      const conditions = {}, msg = box.querySelector('#recvMsg'); msg.textContent = '';
+      for (let k = 0; k < ids.length; k++) {                                   // a faulty device that is received needs its state
+        const wrap = list.querySelector('.recvItem[data-asset="' + ids[k] + '"] .condBox');
+        if (!wrap || typeof readCondition !== 'function') continue;
+        const c = readCondition(wrap);
+        if (!c.ok) { msg.textContent = ids[k] + ': ' + c.msg; return; }
+        conditions[ids[k]] = { state: c.state, type: c.type, detail: c.detail };
+      }
       if (ids.length < items.length && !confirm((items.length - ids.length) + ' item(s) will be flagged as NOT received. Continue?')) return;
       busy(e.target, function () {
-        return callBackend('receiveTransfer', { transferId: t.id, receivedIds: ids, noneArrived: ids.length === 0 }).then(function (r) {
+        return fastCall('receiveTransfer', { transferId: t.id, receivedIds: ids, noneArrived: ids.length === 0, conditions: conditions }, { total: items.length, label: 'Receipt of ' + t.id }).then(function (r) {
           closeModal(); toast(r.short ? r.received + ' received, ' + r.short + ' flagged short' : 'All ' + r.received + ' received'); go('transfers', true);
         });
       });
@@ -1579,7 +1658,7 @@ VIEWS.newTransfer = function (preselect) {
   $('view').innerHTML = '<div class="card"><div class="row spread"><h2>' + (isAdmin ? 'Dispatch to a supervisor' : 'Send assets') + '</h2><button class="linkBtn" data-go="transfers">Back</button></div>' +
     '<div class="stickyHead">' + (isAdmin ? '<label class="f">' + (me.officeInfo && me.officeInfo.multi ? 'Send to (a supervisor, or another city\'s office)' : 'Supervisor receiving') + '</label><select id="toSup"><option value="">Choose…</option></select>'
       : '<label class="f">Send to</label><select id="toSup"><option value="OFFICE">' + esc(me.officeName || OPTS.ui.officeName) + '</option></select>') +
-    (isAdmin ? '<div id="toSupWhere"></div>' : '') +
+    (isAdmin ? '<div id="toSupWhere"></div><div id="replHost"></div>' : '') +
     '<label class="f">Assets (type to search, tick to add)</label><div id="sendSearch"></div>' +
     (isAdmin ? '<label class="f" style="margin-bottom:0"><input type="checkbox" id="showAll"> Include assets the records show elsewhere (flagged for review)</label>' : '<div class="small muted">Devices and SD cards at your property are listed, yours first.</div>') + '</div>' +
     '<div id="pickHost"></div>' +
@@ -1587,12 +1666,12 @@ VIEWS.newTransfer = function (preselect) {
     '<div class="row" style="margin-top:14px"><button class="btn" id="submitTransfer">' + (isAdmin ? 'Mark as dispatched' : 'Mark as sent') + '</button></div>' +
     '<p class="small muted">Assets stay with you and show as "in transit" until the receiver confirms what arrived.</p></div>';
   const others = othersField($('othersHost')), photo = photoField($('photoHost'), 'Photo of the package / contents (optional)');
-  return Promise.all([cachedCall('picker', {}, 30000), cachedCall('supervisorList', {}, 300000)]).then(function (r) {
+  return Promise.all([cachedStale('picker', {}, 30000), cachedStale('supervisorList', {}, 300000)]).then(function (r) {
     const all = r[0];
     $('toSup').innerHTML += r[1].map(function (s) { return '<option value="' + esc(s.id) + '">' + (isAdmin ? '' : 'Supervisor: ') + esc(s.name) + ' (' + esc(s.location) + ')</option>'; }).join('');
     if (isAdmin) {   // under the chosen supervisor: their latest location, to know where to send the parcel
       const byId = {}; r[1].forEach(function (x) { byId[x.id] = x; });
-      $('toSup').addEventListener('change', function () { const x = byId[$('toSup').value]; $('toSupWhere').innerHTML = x ? '<div class="card" style="margin:8px 0 0"><b>' + esc(x.name) + '</b>' + captureHtml(x.capture, x.locationWarning) + '</div>' : ''; });
+      $('toSup').addEventListener('change', function () { const x = byId[$('toSup').value]; $('toSupWhere').innerHTML = x ? '<div class="card" style="margin:8px 0 0"><b>' + esc(x.name) + '</b>' + captureHtml(x.capture, x.locationWarning) + '</div>' : ''; if (typeof paintReplacement === 'function') paintReplacement(x); });
     }
     const oi = me.officeInfo;
     if (isAdmin && oi && oi.multi) {
@@ -1612,9 +1691,13 @@ VIEWS.newTransfer = function (preselect) {
       const dest = $('toSup').value.replace(/^OFFICE:/, ''), toOffice = $('toSup').value === 'OFFICE' || /^OFFICE:/.test($('toSup').value);
       busy(e.target, function () {
         const f = photo.file();   // the send goes through now; the photo follows in the background
-        return callBackend('createTransfer', { toType: toOffice ? 'OFFICE' : 'SUPERVISOR', toId: toOffice && dest !== 'OFFICE' ? dest : (toOffice ? '' : dest), assetIds: ids, others: oth, note: $('note').value, photoPending: !!f }).then(function (res) {
+        const body = { toType: toOffice ? 'OFFICE' : 'SUPERVISOR', toId: toOffice && dest !== 'OFFICE' ? dest : (toOffice ? '' : dest), assetIds: ids, others: oth, note: $('note').value, photoPending: !!f };
+        if (typeof readReplacement === 'function' && !toOffice) { const rf = readReplacement(); if (rf.length) body.replaceFor = rf; }
+        // without a photo the send is shown at once and goes in the background; with a photo it waits for the id to attach the photo to
+        const call = f ? callBackend('createTransfer', body) : fastCall('createTransfer', body, { toName: $('toSup').selectedOptions[0] ? $('toSup').selectedOptions[0].textContent : '', label: 'The send' });
+        return call.then(function (res) {
           if (f) photoQueue.add('transfer', [res.transferId], res.transferId, f);
-          toast(res.itemCount + ' item(s) in transit · ' + res.transferId + (f ? ' · photo uploading in the background' : '')); go('transfers');
+          toast(res.itemCount + ' item(s) in transit' + (res.transferId ? ' · ' + res.transferId : '') + (f ? ' · photo uploading in the background' : '')); go('transfers');
         });
       });
     });
@@ -1693,10 +1776,12 @@ function groupIssues(list) {
     if (i.at > c.latest) c.latest = i.at;
     const open = !(i.status === 'RESOLVED' || i.status === 'REPLACED');
     const k = i.type + '|' + (open ? i.status : 'CLOSED');
+    c.category = c.category || i.category;
     let ln = c.byKey[k];
-    if (!ln) { ln = c.byKey[k] = { type: i.type, status: i.status, open: open, ids: [], by: [], at: i.at, descriptions: [], photos: [], resolution: i.resolution, count: 0 }; c.lines.push(ln); }
+    if (!ln) { ln = c.byKey[k] = { category: i.category, assetId: i.assetId, type: i.type, status: i.status, open: open, ids: [], by: [], at: i.at, descriptions: [], photos: [], resolution: i.resolution, count: 0 }; c.lines.push(ln); }
     ln.count++; ln.ids.push(i.id); if (i.canSend) ln.canSend = true;
-    if (!ln.flowAt || i.at >= ln.flowAt) { ln.flowAt = i.at; ln.issueId = i.id; ln.stage = i.stage; ln.stageLabel = i.stageLabel; ln.where = i.where; ln.days = i.days; ln.since = i.since; ln.handoverId = i.handoverId; }
+    if (!ln.flowAt || i.at >= ln.flowAt) { ln.flowAt = i.at; ln.issueId = i.id; ln.stage = i.stage; ln.stageLabel = i.stageLabel; ln.where = i.where; ln.days = i.days; ln.since = i.since; ln.handoverId = i.handoverId; ln.metrics = i.metrics; ln.detail = i.detail; ln.actionArea = i.actionArea; ln.actionDetail = i.actionDetail; ln.officeState = i.officeState; ln.officeFound = i.officeFound; ln.techState = i.techState; ln.techFound = i.techFound; ln.replacement = i.replacement; }
+    if (i.canResolve) ln.canResolve = true; if (i.canAskHelp) ln.canAskHelp = true;
     if (ln.by.indexOf(i.by) === -1) ln.by.push(i.by);
     if (i.at > ln.at) ln.at = i.at;
     if (i.description && ln.descriptions.indexOf(i.description) === -1) ln.descriptions.push(i.description);
@@ -1723,19 +1808,19 @@ function issueCard(c, selectable) {
         '<div class="small muted">' + esc(l.by.join(', ')) + ' · latest ' + fmt(l.at) + '</div>' +
         l.descriptions.slice(0, 3).map(function (d) { return '<div class="small">“' + esc(d) + '”</div>'; }).join('') +
         (l.resolution ? '<div class="small muted">Resolution: ' + esc(l.resolution) + '</div>' : '') +
-        (l.open && l.where ? '<div class="small" style="margin-top:4px">Now: <b>' + esc(l.where) + '</b></div>' : '') +
+        (l.open && l.where ? '<div class="small" style="margin-top:4px">Now: <b>' + esc(l.where) + '</b></div>' : '') + (typeof issueLevelHtml === 'function' ? issueLevelHtml(l) : '') +
         (!l.photos.length && l.photoState === 'PENDING' ? '<div class="small muted">Photo on its way…</div>' : '') + (!l.photos.length && l.photoState === 'MISSING' ? '<div style="margin-top:6px">' + pill('Photo missing (upload failed)', 'warn') + '</div>' :
         (l.photos.length ? '<div class="row" style="margin-top:6px">' + l.photos.slice(0, 3).map(function (p, n) { return '<button class="btn secondary small" data-photo="' + esc(p) + '">Photo ' + (n + 1) + '</button>'; }).join('') + '</div>' : '')) +
         (l.canSend ? '<div style="margin-top:6px"><button class="btn small" data-send-for="' + esc(c.assetId) + '">Send to office</button></div>' : '') +
-        (l.open && me.role === 'ADMIN' && l.stage ? flowButtons({ issueId: l.issueId, assetId: c.assetId, stage: l.stage, handoverId: l.handoverId }) : '') +
+        (l.open && me.role === 'ADMIN' && l.stage ? flowButtons({ issueId: l.issueId, assetId: c.assetId, category: c.category, stage: l.stage, handoverId: l.handoverId }) : '') +
         storyToggle(l.issueId || l.ids[0]) + '</div>' +
         (l.open ? '' : pill(l.status.replace('_', ' ').toLowerCase(), 'ok')) + '</div></div>';
     }).join('') + '</div>';
 }
 
 let issueFilter = 'ALL';
-const ISSUE_GROUPS = [['ALL', 'All open'], ['SITE', 'At site'], ['MOVE', 'On the way'], ['OFFICE', 'At office'], ['TECH', 'Product team'], ['BACK', 'Back'], ['DONE', 'Resolved']];
-function issueGroupOf(stage) { return { SITE: 'SITE', TO_OFFICE: 'MOVE', BACK_WAY: 'MOVE', OFFICE: 'OFFICE', REVIEW: 'OFFICE', TO_TECH: 'TECH', TECH: 'TECH', BACK: 'BACK', DONE: 'DONE' }[stage] || 'OFFICE'; }
+const ISSUE_GROUPS = [['ALL', 'All open'], ['SITE', 'At site'], ['REMOTE', 'Remote review'], ['MOVE', 'On the way'], ['OFFICE', 'At office'], ['TECH', 'Product team'], ['BACK', 'Back'], ['DONE', 'Resolved']];
+function issueGroupOf(stage) { return { SITE: 'SITE', REMOTE: 'REMOTE', TO_OFFICE: 'MOVE', BACK_WAY: 'MOVE', OFFICE: 'OFFICE', REVIEW: 'OFFICE', TO_TECH: 'TECH', TECH: 'TECH', BACK: 'BACK', DONE: 'DONE' }[stage] || 'OFFICE'; }
 
 VIEWS.issues = function () {
   const showDone = issueFilter === 'DONE';
@@ -1757,7 +1842,7 @@ VIEWS.issues = function () {
     officeMode = 'repair'; loadOffice();   // devices whose issue is resolved and are back at the Office: send back or keep
     const updateBar = function () { $('barCount') && ($('barCount').textContent = sel.size + ' issue(s) selected'); barShow(sel.size > 0); };
     const apply = function (status) {
-      callBackend('updateIssues', { issueIds: Array.from(sel), status: status, resolution: $('barNote').value }).then(function (r) { toast(r.updated + ' issue(s) updated'); go('issues', true); }).catch(toastError);
+      fastCall('updateIssues', { issueIds: Array.from(sel), status: status, resolution: $('barNote').value }, { label: 'The issue update' }).then(function (r) { toast(r.updated + ' issue(s) updated'); go('issues', true); }).catch(toastError);
     };
     barSet('<span id="barCount" class="grow"></span><input type="text" id="barNote" placeholder="Resolution note" style="max-width:220px">' +
       '<button class="btn secondary small" data-bar="review">Under review</button><button class="btn small" data-bar="resolved">Resolved</button><button class="btn secondary small" data-bar="replaced">Replaced</button>' +
@@ -1786,7 +1871,7 @@ VIEWS.issue = function (preset) {
     '<div class="stickyHead"><label class="f">Devices and SD cards (type to search, tick to add)</label><div id="issSearch"></div></div><div id="pickHost"></div><div id="dupHost"></div><div id="typeHost"></div>' +
     '<label class="f">What is wrong?</label><textarea id="desc"></textarea><div id="photoHost"></div><div class="row" style="margin-top:14px"><button class="btn" id="submitIssue">Report issue</button></div></div>';
   const photo = photoField($('photoHost'), 'Photo (recommended; used for all selected)');
-  return cachedCall('picker', {}, 30000).then(function (all) {
+  return cachedStale('picker', {}, 30000).then(function (all) {
     const byId = {}; all.forEach(function (a) { byId[a.id] = a; });
     const items = all.map(function (a) { return { id: a.id, label: catPrefix(a.c) + (a.t || ''), sub: a.h + ' · ' + a.loc, badge: a.oi && a.oi.length ? pill('already reported', 'warn') : '' }; });
     let allRepeats = false;
@@ -1805,6 +1890,14 @@ VIEWS.issue = function (preset) {
       if (allRepeats) b.textContent = 'Already reported';
       else b.textContent = ids.length > 1 ? 'Report issue on ' + ids.length + ' items' : 'Report issue';
     };
+    // under the issue type: what exactly is wrong (when the list has choices for that type)
+    const paintDetails = function () {
+      (OPTS.categories || []).forEach(function (cc) {
+        const c = cc.code, host = $('detailHost_' + c), sel = $('type_' + c); if (!host || !sel) return;
+        const list = ((OPTS.issueDetails || {})[c] || {})[sel.value] || [], prev = $('detail_' + c) ? $('detail_' + c).value : '';
+        host.innerHTML = list.length ? '<label class="f">What exactly is wrong</label><select id="detail_' + c + '"><option value="">Choose…</option>' + list.map(function (v) { return '<option' + (v === prev ? ' selected' : '') + '>' + esc(v) + '</option>'; }).join('') + '</select>' : '';
+      });
+    };
     const paintTypes = function (ids) {
       const counts = {}, cats = (OPTS.categories || []).map(function (c) { return c.code; });
       cats.forEach(function (c) { counts[c] = 0; });
@@ -1812,24 +1905,29 @@ VIEWS.issue = function (preset) {
       $('typeHost').innerHTML = cats.filter(function (c) { return counts[c]; }).map(function (c) {
         const prev = $('type_' + c) ? $('type_' + c).value : '';
         return '<label class="f">Issue type for ' + counts[c] + ' ' + catLabel(c).toLowerCase() + (counts[c] > 1 ? 's' : '') + '</label><select id="type_' + c + '">' +
-          (OPTS.issueTypes[c] || []).map(function (t) { return '<option' + (t.value === prev ? ' selected' : '') + '>' + esc(t.value) + '</option>'; }).join('') + '</select>';
+          (OPTS.issueTypes[c] || []).map(function (t) { return '<option' + (t.value === prev ? ' selected' : '') + '>' + esc(t.value) + '</option>'; }).join('') + '</select><div id="detailHost_' + c + '"></div>';
       }).join('');
+      paintDetails();
       paintDups();
     };
     let picker = null;
     picker = createPicker($('pickHost'), { searchHost: $('issSearch'), items: items, multi: true, selected: pre, placeholder: 'Search by ID…', onChange: paintTypes });
-    $('typeHost').addEventListener('change', paintDups);
+    $('typeHost').addEventListener('change', function (ev) { if (ev.target && /^type_/.test(ev.target.id)) paintDetails(); paintDups(); });
     paintTypes(pre);
     $('submitIssue').addEventListener('click', function (e) {
       const ids = picker.selected();
       if (!ids.length) return toast('Pick at least one device or SD card.', true);
       const typeByCategory = {};
-      (OPTS.categories || []).forEach(function (cc) { const c = cc.code; if ($('type_' + c)) typeByCategory[c] = $('type_' + c).value; });
+      const detailByCategory = {};
+      (OPTS.categories || []).forEach(function (cc) { const c = cc.code; if ($('type_' + c)) typeByCategory[c] = $('type_' + c).value; if ($('detail_' + c)) detailByCategory[c] = $('detail_' + c).value; });
+      const missing = (OPTS.categories || []).find(function (cc) { return $('detail_' + cc.code) && !$('detail_' + cc.code).value; });
+      if (missing) return toast('Say what exactly is wrong (' + catLabel(missing.code).toLowerCase() + ').', true);
       busy(e.target, function () {
         const f = photo.file();   // the report goes through now; the photo follows in the background
-        return callBackend('reportIssues', { assetIds: ids, typeByCategory: typeByCategory, description: $('desc').value, photoPending: !!f }).then(function (r) {
+        const body = { assetIds: ids, typeByCategory: typeByCategory, detailByCategory: detailByCategory, description: $('desc').value, photoPending: !!f };
+        return (f ? callBackend('reportIssues', body) : fastCall('reportIssues', body, { label: 'The report' })).then(function (r) {
           if (f && r.count) photoQueue.add('issue', r.issueIds, ids[0], f);
-          homeSel.clear(); memo = {};
+          homeSel.clear(); memoDirty();
           const dup = (r.duplicates || []).length;
           if (!r.count) { toast('Already reported. Nothing new was sent' + (dup ? ' (' + r.duplicates.map(function (d) { return d.assetId; }).join(', ') + ').' : '.'), true); go(me.role === 'SUPERVISOR' ? 'home' : 'issues'); return; }
           toast(r.count + ' issue(s) reported' + (dup ? '. ' + dup + ' already reported, skipped.' : ''));
@@ -1857,7 +1955,7 @@ VIEWS.search = function (preset) {
   };
   // Suggestions while typing: matched on the ID, the kind, the holder and the place, from the same list the pickers use (loaded once, in the background)
   let all = [], shown = [], on = -1;
-  cachedCall('picker', {}, 30000).then(function (list) { all = list; if (document.activeElement === $('q') && $('q').value.trim()) suggest(); }).catch(function () { /* typing an exact ID and pressing Search still works */ });
+  cachedStale('picker', {}, 30000).then(function (list) { all = list; if (document.activeElement === $('q') && $('q').value.trim()) suggest(); }).catch(function () { /* typing an exact ID and pressing Search still works */ });
   function suggest() {
     const terms = $('q').value.trim().toLowerCase().split(/\s+/).filter(Boolean), box = $('sug');
     if (!terms.length) { box.classList.add('hidden'); shown = []; return; }
@@ -1942,7 +2040,7 @@ function renderFlags(all) {
       (isAdmin ? '<p class="small muted">Tick several to deal with them together (dismiss, assign to a holder, settle short receipts, acknowledge).</p>' : '') +
       (flags.length ? flags.map(function (f) {
         const prov = isAdmin && f.type === 'PROVISIONAL_ASSET'
-          ? '<div class="row" style="margin-top:8px"><input type="text" placeholder="Real asset ID (if known)" id="newid_' + esc(f.id) + '" style="max-width:200px"><button class="btn small" data-ack="' + esc(f.assetId) + '" data-flag="' + esc(f.id) + '">Acknowledge this one</button><button class="btn secondary small" data-retire="' + esc(f.assetId) + '">Not a real asset: retire</button></div>' : '';
+          ? '<div class="row" style="margin-top:8px"><input type="text" placeholder="' + esc(Object.keys(OPTS.idFormats || {}).length ? 'Real ID, e.g. ' + Object.keys(OPTS.idFormats).map(function (c) { return OPTS.idFormats[c].split('|')[0]; }).join(' or ') : 'Real asset ID (if known)') + '" id="newid_' + esc(f.id) + '" style="max-width:200px"><button class="btn small" data-ack="' + esc(f.assetId) + '" data-flag="' + esc(f.id) + '">Acknowledge this one</button><button class="btn secondary small" data-retire="' + esc(f.assetId) + '">Not a real asset: retire</button></div>' : '';
         return '<div class="card flag ' + esc(f.severity) + '"><div class="row spread" style="align-items:flex-start">' + (isAdmin && !f.readonly ? '<label class="selbox"><input type="checkbox" data-fsel="' + esc(f.id) + '"></label>' : '') +
           '<div class="grow"><b>' + esc(f.title || FLAG_TITLES[f.type] || f.type) + '</b>' + (f.assetId ? ' · <a href="#" data-asset="' + esc(f.assetId) + '">' + esc(f.assetId) + '</a>' : '') + (f.refId ? ' · ' + esc(f.refId) : '') + '</div>' +
           pill(f.severity.toLowerCase(), f.severity === 'HIGH' ? 'bad' : f.severity === 'MEDIUM' ? 'warn' : 'info') + '</div><div>' + esc(f.detail) + '</div><div class="small muted">' + fmt(f.at) + (f.location ? ' · ' + esc(f.location) : '') + '</div>' + prov + '</div>';
@@ -1965,7 +2063,7 @@ function renderFlags(all) {
       clear: function () { sel.clear(); document.querySelectorAll('[data-fsel]').forEach(function (c) { c.checked = false; }); updateBar(); }
     });
     function runBulk(op, arg) {
-      callBackend('bulkFlags', { flagIds: Array.from(sel), op: op, arg: arg }).then(function (res) {
+      fastCall('bulkFlags', { flagIds: Array.from(sel), op: op, arg: arg }, { label: 'The flag update' }).then(function (res) {
         toast(res.done + ' done' + (res.skipped ? ', ' + res.skipped + ' already closed' : '')); go('flags', true);
       }).catch(toastError);
     }
@@ -2395,9 +2493,11 @@ VIEWS.help = function () {
 
 // ---- Assets (admin) ----
 VIEWS.assets = function () {
-  $('view').innerHTML = '<div class="card"><h2>Add assets</h2><p class="small muted">One per line: <code>AssetID, category, kind, serial, capacity</code> (category: ' + (OPTS.categories || []).map(function (c) { return '<code>' + esc(c.code) + '</code>'; }).join(', ') + '). New assets start in your custody at the Office. Existing IDs are skipped. For the first big import use <code>importAssetsFromTab()</code> in the script (see docs).</p>' +
-    '<textarea id="bulk" style="min-height:140px" placeholder="D401, DEVICE, Android Phone, SN12345,&#10;SD401, SD_CARD, 128GB, , 128GB"></textarea><div class="row" style="margin-top:10px"><button class="btn" id="addBulk">Add assets</button></div><div id="bulkResult" class="small"></div></div>' +
-    '<div class="card"><h2>Import from a CSV file</h2><p class="small muted">For many assets at once. Download the template, fill it in, then choose the file. You see a summary before anything is saved. Columns: AssetID, Category (DEVICE or SD_CARD), SubType, Serial, Capacity, HolderEmail (optional).</p>' +
+  const fm = OPTS.idFormats || {};
+  const idHint = Object.keys(fm).length ? '<div class="banner info"><div class="grow small"><b>ID format:</b> ' + Object.keys(fm).map(function (c) { return esc(catLabel(c)) + ' = <code>' + esc(fm[c].split('|').join(' or ')) + '</code>'; }).join('; ') + '. Each 0 is a digit, lower case is converted, and nothing may come after the number. An ID that does not fit is skipped and the reason is shown.</div></div>' : '';
+  $('view').innerHTML = '<div class="card"><h2>Add assets</h2>' + idHint + '<p class="small muted">One per line: <code>AssetID, category, kind, serial, capacity</code> (category: ' + (OPTS.categories || []).map(function (c) { return '<code>' + esc(c.code) + '</code>'; }).join(', ') + '). New assets start in your custody at the Office. Existing IDs are skipped. For the first big import use <code>importAssetsFromTab()</code> in the script (see docs).</p>' +
+    '<textarea id="bulk" style="min-height:140px" placeholder="PIRIG401, DEVICE, Android Phone, SN12345,&#10;SDRIG401(D), SD_CARD, 128GB, , 128GB"></textarea><div class="row" style="margin-top:10px"><button class="btn" id="addBulk">Add assets</button></div><div id="bulkResult" class="small"></div></div>' +
+    '<div class="card"><h2>Import from a CSV file</h2>' + idHint + '<p class="small muted">For many assets at once. Download the template, fill it in, then choose the file. You see a summary before anything is saved. Columns: AssetID, Category (DEVICE or SD_CARD), SubType, Serial, Capacity, HolderEmail (optional).</p>' +
     '<div class="row"><button class="btn secondary" id="csvTemplate">Download CSV template</button><label class="btn" for="csvFile" style="margin:0">Choose CSV file</label><input type="file" id="csvFile" accept=".csv,text/csv" class="hidden"></div>' +
     '<div id="csvPreview" class="small" style="margin-top:10px"></div></div>';
   wireCsvImport();
@@ -2557,7 +2657,7 @@ document.addEventListener('click', function (e) {
   if (d.act === 'checkin') { pending(t); return go('checkin'); }
   if (d.act === 'issue') { pending(t); return go('issue'); }
   if (d.receive) return openReceive(d.receive);
-  if (d.cancel) { if (confirm('Cancel this transfer? The assets return to the sender.')) busy(t, function () { return callBackend('cancelTransfer', { transferId: d.cancel }).then(function () { toast('Cancelled'); go('transfers', true); }); }); return; }
+  if (d.cancel) { if (confirm('Cancel this transfer? The assets return to the sender.')) busy(t, function () { return fastCall('cancelTransfer', { transferId: d.cancel }, { label: 'Cancelling ' + d.cancel }).then(function () { toast('Cancelled'); go('transfers', true); }); }); return; }
   if (d.photo) return viewPhoto(d.photo);
   if (d.prop) return go('property', false, d.prop);
   if (d.issueFor) return go('issue', false, [d.issueFor]);
@@ -2567,16 +2667,16 @@ document.addEventListener('click', function (e) {
   if (d.asset) { e.preventDefault(); return go('search', false, d.asset); }
   if (d.issue) {
     const note = $('res_' + d.issue);
-    return busy(t, function () { return callBackend('updateIssue', { issueId: d.issue, status: d.status, resolution: note ? note.value : '' }).then(function () { toast('Issue updated'); go('issues', true); }); });
+    return busy(t, function () { return fastCall('updateIssue', { issueId: d.issue, status: d.status, resolution: note ? note.value : '' }, { label: 'The issue update' }).then(function () { toast('Issue updated'); go('issues', true); }); });
   }
-  if (d.short) return busy(t, function () { return callBackend('resolveShort', { flagId: d.flag, resolution: d.short }).then(function () { toast('Resolved'); go('flags', true); }); });
+  if (d.short) return busy(t, function () { return fastCall('resolveShort', { flagId: d.flag, resolution: d.short }, { label: 'Resolving the short receipt' }).then(function () { toast('Resolved'); go('flags', true); }); });
   if (d.retire) {
     const why = prompt('This is not a real asset (for example the device is already in the list under its real ID). It will disappear from all lists. Why? (optional)'); if (why === null) return;
-    return busy(t, function () { return callBackend('retireProvisional', { assetId: d.retire, reason: why }).then(function () { toast('Retired'); if ($('detail')) callBackend('search', { assetId: d.retire }).then(renderDetail).catch(function () {}); else go('flags', true); }); });
+    return busy(t, function () { return fastCall('retireProvisional', { assetId: d.retire, reason: why }, { label: 'Retiring ' + d.retire }).then(function () { toast('Retired'); if ($('detail')) callBackend('search', { assetId: d.retire }).then(renderDetail).catch(function () {}); else go('flags', true); }); });
   }
   if (d.ack) {
     const nid = $('newid_' + d.flag);
-    return busy(t, function () { return callBackend('ackProvisional', { assetId: d.ack, newId: nid ? nid.value : '' }).then(function () { toast('Acknowledged'); go('flags', true); }); });
+    return busy(t, function () { return fastCall('ackProvisional', { assetId: d.ack, newId: nid ? nid.value : '' }, { label: 'Acknowledging ' + d.ack }).then(function () { toast('Acknowledged'); go('flags', true); }); });
   }
   if (d.assign) {
     const v = $('asg_' + d.flag).value.split(':');
@@ -2584,10 +2684,10 @@ document.addEventListener('click', function (e) {
       return callBackend('reassign', { assetId: d.assign, holderType: v[0], holderId: v[0] === 'ADMIN' ? me.email : v[1], reason: 'Assigned from flag ' + d.flag }).then(function () { toast('Assigned'); go('flags', true); });
     });
   }
-  if (d.dismiss) { const why = prompt('Why are you dismissing this? (optional)'); if (why === null) return; return busy(t, function () { return callBackend('resolveFlag', { flagId: d.dismiss, resolution: why }).then(function () { toast('Dismissed'); go('flags', true); }); }); }
-  if (d.unassign) { e.preventDefault(); return busy(t, function () { return callBackend('deassign', { assetIds: [d.unassign] }).then(function () { toast('Unassigned ' + d.unassign); go('team', true); }); }); }
-  if (d.confirmall !== undefined) return busy(t, function () { return callBackend('confirmAssignments', {}).then(function (r) { toast(r.confirmed + ' assignment(s) confirmed'); go(tab, true); }); });
-  if (d.confirmitems) return busy(t, function () { return callBackend('confirmAssignments', { assetIds: d.confirmitems.split(',') }).then(function () { toast('Confirmed'); go('team', true); }); });
+  if (d.dismiss) { const why = prompt('Why are you dismissing this? (optional)'); if (why === null) return; return busy(t, function () { return fastCall('resolveFlag', { flagId: d.dismiss, resolution: why }, { label: 'Dismissing the flag' }).then(function () { toast('Dismissed'); go('flags', true); }); }); }
+  if (d.unassign) { e.preventDefault(); return busy(t, function () { return fastCall('deassign', { assetIds: [d.unassign] }, { label: 'Taking ' + d.unassign + ' back' }).then(function () { toast('Unassigned ' + d.unassign); go('team', true); }); }); }
+  if (d.confirmall !== undefined) return busy(t, function () { return fastCall('confirmAssignments', {}, { label: 'The confirmation' }).then(function (r) { toast(r.confirmed + ' assignment(s) confirmed'); go(tab, true); }); });
+  if (d.confirmitems) return busy(t, function () { return fastCall('confirmAssignments', { assetIds: d.confirmitems.split(',') }, { label: 'The confirmation' }).then(function () { toast('Confirmed'); go('team', true); }); });
   if (d.report) return busy(t, function () { return callBackend('report', { type: d.report }).then(function (rep) { downloadCsv(d.report, rep); }); });
 });
 
