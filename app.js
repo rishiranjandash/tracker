@@ -603,7 +603,10 @@ function startSession(withSync) {
   $('signInError').textContent = '';
   memo = {}; memoEpoch++; lastStamp = '';
   // A device that was used before opens from its last copy at once (the home answer and the lists kept in this browser); the real answers arrive behind it.
-  const warm = typeof fastWarmStart === 'function' ? fastWarmStart() : null;
+  let warm = typeof fastWarmStart === 'function' ? fastWarmStart() : null;
+  // The saved copy belongs to the role that was open last. If the person has just switched role ("Acting as"), it must not be shown: opening it would put them straight back
+  // into the old role (open() sets the role from the copy, before the first request is made).
+  if (warm && activeRole && warm.home.role !== activeRole && warm.home.roles && warm.home.roles.indexOf(activeRole) !== -1) { warm = null; memo = {}; memoEpoch++; }
   let opened = false;
   const open = function (h) {
     $('signedOut').classList.add('hidden');
