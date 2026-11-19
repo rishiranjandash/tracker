@@ -32,8 +32,8 @@ const ASSET_CSV_COLUMNS = ['AssetID', 'Category', 'SubType', 'Serial', 'Capacity
 /** The file admins download, fill in and upload. */
 function assetCsvTemplate() {
   return [ASSET_CSV_COLUMNS,
-    ['D401', 'DEVICE', 'Android Phone', 'SN12345', '', ''],
-    ['SD401', 'SD_CARD', '128GB', '', '128GB', 'supervisor@gmail.com']
+    ['PIRIG401', 'DEVICE', 'Android Phone', 'SN12345', '', ''],
+    ['SDRIG401(D)', 'SD_CARD', '128GB', '', '128GB', 'supervisor@gmail.com']
   ].map(function (r) { return r.map(csvQuote).join(','); }).join('\r\n') + '\r\n';
 }
 
