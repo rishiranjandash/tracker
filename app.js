@@ -599,14 +599,14 @@ function loginWithGoogle(credential) {
   }).catch(function (e) { $('signInError').textContent = e.message; });
 }
 
+let sessionSeq = 0;
 function startSession(withSync) {
   $('signInError').textContent = '';
   memo = {}; memoEpoch++; lastStamp = '';
   // A device that was used before opens from its last copy at once (the home answer and the lists kept in this browser); the real answers arrive behind it.
-  let warm = typeof fastWarmStart === 'function' ? fastWarmStart() : null;
-  // The saved copy belongs to the role that was open last. If the person has just switched role ("Acting as"), it must not be shown: opening it would put them straight back
-  // into the old role (open() sets the role from the copy, before the first request is made).
-  if (warm && activeRole && warm.home.role !== activeRole && warm.home.roles && warm.home.roles.indexOf(activeRole) !== -1) { warm = null; memo = {}; memoEpoch++; }
+  const seq = ++sessionSeq;                                              // an answer that belongs to an earlier start (before a role switch) must never be drawn
+  // The copy kept for the role being opened (each role has its own), so a role switch shows the other role's screens at once, or the plain "Opening" if there is none yet.
+  const warm = typeof fastWarmStart === 'function' ? fastWarmStart(activeRole) : null;
   let opened = false;
   const open = function (h) {
     $('signedOut').classList.add('hidden');
@@ -635,9 +635,11 @@ function startSession(withSync) {
   if (warm) { me = warm.home; OPTS = warm.opts; opened = true; open(warm.home); }
   // The two requests run side by side; the home answer is remembered so the first screen draws without asking again.
   Promise.all([callBackend('home'), loadOpts()]).then(function (r) {
+    if (seq !== sessionSeq) return null;                                // the role was switched again while this was loading
     const h = r[0]; me = h; OPTS = r[1];
     return syncOpts(h.optionsStamp).then(function () { return r; });   // lists changed on the server since this phone saved them: reload before the first screen
   }).then(function (r) {
+    if (!r || seq !== sessionSeq) return;
     const h = r[0];
     if (opened) {                                                      // already on screen from the copy: only a change of role or offices needs the screen to be rebuilt
       if (h.role !== warm.home.role || JSON.stringify(h.roles) !== JSON.stringify(warm.home.roles)) { memo = {}; memoEpoch++; memo[memoKey('home', {})] = { at: Date.now(), data: h }; open(h); }
@@ -646,6 +648,7 @@ function startSession(withSync) {
     }
     open(h);
   }).catch(function (e) {
+    if (seq !== sessionSeq) return;
     if (e.code === 'AUTH') return;                       // callBackend already signed out
     if (opened) { toast('No connection: showing the last copy on this phone.', true); return; }
     if (e.code === 'NOT_LISTED') { saveSession(''); $('view').classList.add('hidden'); showSignIn(e.message); return; }
@@ -2716,6 +2719,7 @@ $('roleSwitch').addEventListener('change', function () {
   if (teamDirty && !confirm('You have unsaved assignment changes. Switch role without saving?')) { $('roleSwitch').value = activeRole; return; }
   teamDirty = false; activeRole = $('roleSwitch').value;
   try { localStorage.setItem('at_role', activeRole); } catch (e) { /* ignore */ }
+  $('view').innerHTML = '<div class="empty">Opening ' + esc(activeRole.charAt(0) + activeRole.slice(1).toLowerCase()) + '…</div>';   // at once, whether or not there is a saved copy of that role yet
   homeSel.clear(); startSession();
 });
 
