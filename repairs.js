@@ -7,7 +7,7 @@
  * Tech desk offer exactly the same next steps.
  */
 
-const STAGE_CLASS = { SITE: '', TO_OFFICE: 'info', OFFICE: 'info', REVIEW: 'info', TO_TECH: 'info', TECH: 'info', BACK_WAY: 'info', BACK: 'warn', DONE: 'ok' };
+const STAGE_CLASS = { SITE: '', REMOTE: 'info', TO_OFFICE: 'info', OFFICE: 'info', REVIEW: 'info', TO_TECH: 'info', TECH: 'info', BACK_WAY: 'info', BACK: 'warn', DONE: 'ok' };
 function stagePill(stage, label) { return pill(label || stage, STAGE_CLASS[stage] || ''); }
 
 /** "Day 2 here", or "Stuck 4 days" once it has waited long enough (a device that was reported but not sent goes amber after a day). */
@@ -23,16 +23,19 @@ function askNote(o) {
   openModal('<div class="row spread"><h2>' + esc(o.title) + '</h2><button class="linkBtn" data-close>Close</button></div>' + (o.intro ? '<p class="small muted">' + esc(o.intro) + '</p>' : '') +
     (o.select ? '<label class="f">' + esc(o.select.label) + '</label><select id="askSel">' + o.select.opts.map(function (x) { return '<option>' + esc(x) + '</option>'; }).join('') + '</select>' : '') +
     '<label class="f">' + esc(o.noteLabel || 'Note') + (o.need ? '' : ' <span class="muted">(optional)</span>') + '</label><textarea id="askNote" maxlength="300" placeholder="' + esc(o.ph || '') + '"></textarea>' +
-    (o.ref ? '<label class="f">Courier and tracking number <span class="muted">(optional)</span></label><input type="text" id="askRef" maxlength="60">' : '') +
+    (o.ref ? '<label class="f">Courier and tracking number <span class="muted">(optional)</span></label><input type="text" id="askRef" maxlength="60">' : '') + (o.cond && typeof conditionBlock === 'function' ? conditionBlock(o.cond, o.condType) : '') +
     '<div class="small" id="askMsg" style="color:var(--bad);margin-top:6px"></div><div class="row" style="margin-top:12px"><button class="btn" id="askOk">' + esc(o.ok) + '</button></div>', function (box) {
     box.querySelector('#askOk').addEventListener('click', function (e) {
       const note = box.querySelector('#askNote').value.trim(), msg = box.querySelector('#askMsg');
       if (o.need && !note) { msg.textContent = 'Please write a short note.'; return; }
+      let cond = null;
+      if (o.cond && box.querySelector('.condBox')) { cond = readCondition(box.querySelector('.condBox')); if (!cond.ok) { msg.textContent = cond.msg; return; } }
       busy(e.target, function () {
-        return o.run({ note: note, ref: o.ref ? box.querySelector('#askRef').value.trim() : '', outcome: o.select ? box.querySelector('#askSel').value : '' })
+        return o.run({ note: note, ref: o.ref ? box.querySelector('#askRef').value.trim() : '', outcome: o.select ? box.querySelector('#askSel').value : '', cond: cond || {} })
           .then(function () { closeModal(); }).catch(function (err) { msg.textContent = (err && err.message) || 'Could not save.'; });
       });
     });
+    if (o.cond && typeof wireCondition === 'function') wireCondition(box);
     setTimeout(function () { const n = box.querySelector('#askNote'); if (n) n.focus(); }, 50);
   });
 }
@@ -44,9 +47,11 @@ function askNote(o) {
 function flowButtons(x) {
   const A = me.role === 'ADMIN', T = me.role === 'TECH', b = [];
   const btn = function (f, label, primary) {
-    return '<button class="btn' + (primary ? '' : ' secondary') + ' small" data-flow="' + f + '" data-fissue="' + esc(x.issueId) + '" data-fhandover="' + esc(x.handoverId || '') + '" data-fasset="' + esc(x.assetId) + '">' + label + '</button>';
+    return '<button class="btn' + (primary ? '' : ' secondary') + ' small" data-flow="' + f + '" data-fissue="' + esc(x.issueId) + '" data-fhandover="' + esc(x.handoverId || '') + '" data-fasset="' + esc(x.assetId) + '" data-fcat="' + esc(x.category || 'DEVICE') + '" data-ftype="' + esc(x.type || '') + '">' + label + '</button>';
   };
   if (A) {
+    if (x.stage === 'SITE') { b.push(btn('remote', 'Under review (remote)')); b.push(btn('resolve', 'Resolve')); }
+    if (x.stage === 'REMOTE') { b.push(btn('resolve', 'Resolve', true)); b.push(btn('asksend', 'Ask them to send it to the Office')); }
     if (x.stage === 'TO_OFFICE') b.push('<button class="btn small" data-go="transfers">Confirm receipt in Transfers</button>');
     if (x.stage === 'OFFICE') { b.push(btn('review', 'Under review')); b.push(btn('resolve', 'Resolve')); b.push(btn('keep', 'Keep in Office')); b.push(btn('totech', 'Send to product team', true)); }
     if (x.stage === 'REVIEW') { b.push(btn('resolve', 'Resolve')); b.push(btn('totech', 'Send to product team', true)); }
@@ -84,24 +89,27 @@ document.addEventListener('click', function (e) {
   const s = e.target.closest('[data-story]');
   if (s) { e.preventDefault(); const open = !document.getElementById('story_' + s.dataset.story).classList.contains('hidden'); toggleStory(s.dataset.story); s.textContent = open ? 'Show the story' : 'Hide the story'; return; }
   const t = e.target.closest('[data-flow]'); if (!t) return;
-  const f = t.dataset.flow, issue = t.dataset.fissue, handover = t.dataset.fhandover, asset = t.dataset.fasset;
+  const f = t.dataset.flow, issue = t.dataset.fissue, handover = t.dataset.fhandover, asset = t.dataset.fasset, cat = t.dataset.fcat || 'DEVICE';
   const done = function (msg) { return function () { toast(msg); go(tab, true); }; };
+  if (f === 'remote') return askNote({ title: 'Under review (remote): ' + asset, intro: 'You look at it remotely while it stays with the supervisor. If it cannot be solved, ask them to send it to the Office.', noteLabel: 'What are you trying?', ph: 'e.g. Asked them to clear the storage', ok: 'Start remote review',
+    run: function (v) { return fastCall('updateIssues', { issueIds: [issue], status: 'UNDER_REVIEW', resolution: v.note }, { label: 'Remote review' }).then(done('Remote review started for ' + asset)); } });
+  if (f === 'asksend') return askNote({ title: 'Ask for ' + asset + ' to be sent in', intro: 'The supervisor is told to send it to the Office with a transfer.', noteLabel: 'Note', ph: 'e.g. Could not fix it remotely', ok: 'Ask them',
+    run: function (v) { return fastCall('askSendToOffice', { issueId: issue, note: v.note }, { label: 'The request' }).then(done('The supervisor is asked to send it')); } });
   if (f === 'review') return askNote({ title: 'Under review: ' + asset, intro: 'Check the device at the office.', noteLabel: 'What did you find?', ph: 'e.g. Reads on one laptop only', ok: 'Mark under review',
-    run: function (v) { return callBackend('updateIssues', { issueIds: [issue], status: 'UNDER_REVIEW', resolution: v.note }).then(done('Marked under review')); } });
+    run: function (v) { return fastCall('updateIssues', { issueIds: [issue], status: 'UNDER_REVIEW', resolution: v.note }, { label: 'Under review' }).then(done('Marked under review')); } });
   if (f === 'keep') return askNote({ title: 'Keep in Office: ' + asset, intro: 'The device stays in the Office and leaves the Transfers tab. It is followed in Issues as under review until you resolve it or send it to the product team.', noteLabel: 'Note', ph: 'e.g. Kept as a spare, fix later', ok: 'Keep in Office',
-    run: function (v) { return callBackend('updateIssues', { issueIds: [issue], status: 'UNDER_REVIEW', resolution: 'Kept in the Office' + (v.note ? ': ' + v.note : '') }).then(done(asset + ' kept in the Office, followed in Issues')); } });
-  if (f === 'resolve') return askNote({ title: 'Resolve: ' + asset, intro: 'Once resolved, a device that came in through the Office comes back to the Office list to send back or keep.', noteLabel: 'How was it resolved?', ph: 'e.g. Tested, works fine', ok: 'Resolve',
-    run: function (v) { return callBackend('updateIssues', { issueIds: [issue], status: 'RESOLVED', resolution: v.note }).then(done(asset + ' resolved')); } });
+    run: function (v) { return fastCall('updateIssues', { issueIds: [issue], status: 'UNDER_REVIEW', resolution: 'Kept in the Office' + (v.note ? ': ' + v.note : '') }, { label: 'Keep in Office' }).then(done(asset + ' kept in the Office, followed in Issues')); } });
+  if (f === 'resolve') return askResolve({ issueIds: [issue], asset: asset, cat: cat, title: 'Resolve: ' + asset });
   if (f === 'totech') return askNote({ title: 'Send to product team: ' + asset, intro: 'The product team is told. The device stays with the Office on paper until you mark it back.', noteLabel: 'Note for the product team', ph: 'What to check', need: true, ref: true, ok: 'Send to product team',
-    run: function (v) { return callBackend('sendToTech', { issueId: issue, note: v.note, ref: v.ref }).then(done('Sent to the product team')); } });
+    run: function (v) { return fastCall('sendToTech', { issueId: issue, note: v.note, ref: v.ref }, { label: 'Sending to the product team' }).then(done('Sent to the product team')); } });
   if (f === 'techback') return askNote({ title: 'Mark back from product team: ' + asset, intro: 'Use this when you have the device back and the product team did not confirm receipt or deposit it. The story will say the office marked it.', noteLabel: 'Note', ph: 'e.g. Came back by courier', ok: 'Mark back',
-    run: function (v) { return callBackend('markBackFromTech', { issueId: issue, note: v.note }).then(done('Marked back from the product team')); } });
+    run: function (v) { return fastCall('markBackFromTech', { issueId: issue, note: v.note }, { label: 'Marking back' }).then(done('Marked back from the product team')); } });
   if (f === 'recvback') return askNote({ title: 'Confirm receipt: ' + asset, intro: 'The product team sent this device back to the Office.', noteLabel: 'Note', ph: 'e.g. Checked, looks fine', ok: 'Confirm receipt',
-    run: function (v) { return callBackend('receiveFromTech', { handoverId: handover, note: v.note }).then(done('Receipt confirmed')); } });
-  if (f === 'techconfirm') return askNote({ title: 'Confirm receipt: ' + asset, intro: 'The device reached the product team.', noteLabel: 'Note', ph: 'e.g. Package in good shape', ok: 'Confirm receipt',
-    run: function (v) { return callBackend('techConfirm', { handoverId: handover, note: v.note }).then(done('Receipt confirmed')); } });
+    run: function (v) { return fastCall('receiveFromTech', { handoverId: handover, note: v.note }, { label: 'Confirming receipt' }).then(done('Receipt confirmed')); } });
+  if (f === 'techconfirm') return askNote({ title: 'Confirm receipt: ' + asset, intro: 'The device reached the product team. Say what state it is in and what was not working.', noteLabel: 'Note', ph: 'e.g. Package in good shape', ok: 'Confirm receipt', cond: cat, condType: t.dataset.ftype || '',
+    run: function (v) { return fastCall('techConfirm', { handoverId: handover, note: v.note, state: v.cond.state, type: v.cond.type, detail: v.cond.detail }, { label: 'Confirming receipt' }).then(done('Receipt confirmed')); } });
   if (f === 'deposit') return askNote({ title: 'Deposit back after repair: ' + asset, intro: 'Sends the device back to the Office. The admin confirms receipt.', select: { label: 'Outcome', opts: ['Repaired', 'Part replaced', 'Not repairable'] }, noteLabel: 'What was done', ph: 'e.g. Battery replaced', need: true, ok: 'Deposit back',
-    run: function (v) { return callBackend('techDeposit', { issueId: issue, outcome: v.outcome, note: v.note }).then(done('Deposited. Waiting for the office to confirm')); } });
+    run: function (v) { return fastCall('techDeposit', { issueId: issue, outcome: v.outcome, note: v.note }, { label: 'Depositing back' }).then(done('Deposited. Waiting for the office to confirm')); } });
 });
 
 // ---------- the Tech desk ----------
@@ -118,7 +126,7 @@ VIEWS.techdesk = function () {
         '<div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">' + stagePill(x.stage, x.stageLabel) + agingPill(x) + '</div></div>' +
         (x.description ? '<div class="small">“' + esc(x.description) + '”</div>' : '') +
         '<div class="small" style="margin-top:6px">Sent ' + fmt(x.sentAt) + ' by ' + esc(x.sentBy) + (x.ref ? ' · ' + esc(x.ref) : '') + '</div>' + (x.sentNote ? '<div class="small">Note: ' + esc(x.sentNote) + '</div>' : '') +
-        flowButtons({ issueId: x.issueId, assetId: x.assetId, stage: x.stage, handoverId: x.handoverId }) +
+        flowButtons({ issueId: x.issueId, assetId: x.assetId, category: x.category, stage: x.stage, handoverId: x.handoverId, type: x.type }) +
         storyToggle(x.issueId) + '</div>';
     };
     const back = d.returned.length ? '<h3>Recently returned (' + d.returned.length + ')</h3>' + d.returned.slice(0, 10).map(function (h) {
