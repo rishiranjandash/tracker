@@ -24,9 +24,13 @@ const MEMO_SAVE = { home: 1, transfers: 1, team: 1, issues: 1, flags: 1, invoice
 let memoSaveTimer = null;
 
 function memoSaveSoon() { if (!persistOk()) return; clearTimeout(memoSaveTimer); memoSaveTimer = setTimeout(memoSaveNow, 1500); }
+/** One saved copy per person AND role, so switching "Acting as" can open the other role's own copy at once (and never shows one role's screens as the other's). */
+function memoKeyFor(owner, role) { return MEMO_KEY + owner + '|' + role; }
 function memoSaveNow() {
   const owner = tokenOwner();
   if (!owner || !me || !persistOk()) return;
+  const home = memo['home|{}'];
+  if (!home || !home.data || home.data.role !== me.role) return;           // the copies in the memo are not this role's (a switch is under way): do not file them under it
   const entries = {}; let total = 0;
   Object.keys(memo).forEach(function (k) {
     if (!MEMO_SAVE[k.split('|')[0]]) return;
@@ -34,18 +38,23 @@ function memoSaveNow() {
     if (n > 250000 || total + n > 1800000) return;                      // keep it small: a big list is simply asked for again
     total += n; entries[k] = { at: memo[k].at, data: memo[k].data };
   });
-  try { localStorage.setItem(MEMO_KEY + owner, JSON.stringify({ v: 1, savedAt: Date.now(), role: me.role, entries: entries })); }
-  catch (e) { try { localStorage.removeItem(MEMO_KEY + owner); } catch (e2) { /* storage blocked */ } }
+  try {
+    localStorage.setItem(memoKeyFor(owner, me.role), JSON.stringify({ v: 2, savedAt: Date.now(), role: me.role, entries: entries }));
+    localStorage.setItem(MEMO_KEY + owner + '|last', me.role);
+  } catch (e) { try { localStorage.removeItem(memoKeyFor(owner, me.role)); } catch (e2) { /* storage blocked */ } }
 }
-/** Called when the app starts: the copies from the last visit go back into the memo (marked old, so they are refreshed behind the screen). -> { home, opts } or null. */
-function fastWarmStart() {
+/** Called when the app starts (or the role is switched): the copies for that role from the last visit go back into the memo (marked old, so they are refreshed behind the screen). -> { home, opts } or null. */
+function fastWarmStart(wantRole) {
   const owner = tokenOwner();
   if (!owner || !persistOk()) return null;
+  let role = wantRole || '';
+  if (!role) { try { role = localStorage.getItem(MEMO_KEY + owner + '|last') || ''; } catch (e) { return null; } }
+  if (!role) return null;
   let s = null;
-  try { s = JSON.parse(localStorage.getItem(MEMO_KEY + owner) || 'null'); } catch (e) { return null; }
-  if (!s || s.v !== 1 || !s.entries || Date.now() - s.savedAt > 7 * 86400000) return null;
+  try { s = JSON.parse(localStorage.getItem(memoKeyFor(owner, role)) || 'null'); } catch (e) { return null; }
+  if (!s || s.v !== 2 || s.role !== role || !s.entries || Date.now() - s.savedAt > 7 * 86400000) return null;
   const h = s.entries['home|{}'], o = readSavedOpts();
-  if (!h || !h.data || !h.data.role || !o || !o.data) return null;
+  if (!h || !h.data || h.data.role !== role || !o || !o.data) return null;
   Object.keys(s.entries).forEach(function (k) { memo[k] = { at: 0, data: s.entries[k].data }; });
   return { home: h.data, opts: o.data };
 }
@@ -53,7 +62,8 @@ function fastWarmStart() {
 function fastSignOut() {
   const owner = tokenOwner();
   clearTimeout(memoSaveTimer);
-  if (owner) { try { localStorage.removeItem(MEMO_KEY + owner); } catch (e) { /* ignore */ } }
+  if (!owner) return;
+  try { Object.keys(localStorage).forEach(function (k) { if (k.indexOf(MEMO_KEY + owner) === 0) localStorage.removeItem(k); }); } catch (e) { /* ignore */ }
 }
 
 // ===================== 2. the outbox =====================
