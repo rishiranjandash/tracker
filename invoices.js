@@ -329,7 +329,7 @@ function openInvoiceRequest() {
       busy(e.target, function () {
         const payload = { refType: kind, note: box.querySelector('#irNote').value, dueDate: box.querySelector('#irDue').value };
         if (kind === 'PROPS') payload.supervisorIds = ids; else payload.refIds = ids;
-        return callBackend('requestInvoices', payload).then(function (r) {
+        return fastCall('requestInvoices', payload, { label: 'The invoice request' }).then(function (r) {
           closeModal(); toast(r.created + ' request(s) sent' + (r.skipped.length ? ' · ' + r.skipped.length + ' skipped (' + r.skipped.slice(0, 2).map(function (s) { return s.transferId + ': ' + s.reason; }).join('; ') + (r.skipped.length > 2 ? '…' : '') + ')' : ''));
           go('invoices', true);
         }).catch(function (err) { msg.textContent = err.message; msg.style.color = 'var(--bad)'; });
@@ -352,10 +352,10 @@ document.addEventListener('click', function (e) {
   if (d.invAttach) { return go('invoiceNew', false, { refType: 'TRANSFER', refId: d.invAttach }); }
   if (d.invFor) { invFilter.refType = d.invFor === 'NONE' ? '' : d.invFor; return go('invoices', true); }
   if (d.invApprove) {
-    return busy(t, function () { return callBackend('reviewInvoice', { invoiceId: d.invApprove, decision: 'APPROVE' }).then(function () { toast('Approved'); go(tab, true); }); });
+    return busy(t, function () { return fastCall('reviewInvoice', { invoiceId: d.invApprove, decision: 'APPROVE' }, { label: 'Approving the invoice' }).then(function () { toast('Approved'); go(tab, true); }); });
   }
   if (d.invCancelreq) {
-    return busy(t, function () { return callBackend('cancelInvoiceRequest', { requestId: d.invCancelreq }).then(function () { toast('Request cancelled'); go('invoices', true); }); });
+    return busy(t, function () { return fastCall('cancelInvoiceRequest', { requestId: d.invCancelreq }, { label: 'Cancelling the request' }).then(function () { toast('Request cancelled'); go('invoices', true); }); });
   }
   if (d.invReject) {
     openModal('<div class="row spread"><h2>Send the invoice back</h2><button class="linkBtn" data-close>Close</button></div><p class="small muted">Say what is wrong. They are asked to send a better one.</p>' +
@@ -363,7 +363,7 @@ document.addEventListener('click', function (e) {
       box.querySelector('#rjGo').addEventListener('click', function (ev) {
         const note = box.querySelector('#rjNote').value.trim();
         if (!note) { box.querySelector('#rjMsg').textContent = 'Say what is wrong.'; box.querySelector('#rjMsg').style.color = 'var(--bad)'; return; }
-        busy(ev.target, function () { return callBackend('reviewInvoice', { invoiceId: d.invReject, decision: 'REJECT', note: note }).then(function () { closeModal(); toast('Sent back'); go('invoices', true); }).catch(function (err) { box.querySelector('#rjMsg').textContent = err.message; box.querySelector('#rjMsg').style.color = 'var(--bad)'; }); });
+        busy(ev.target, function () { return fastCall('reviewInvoice', { invoiceId: d.invReject, decision: 'REJECT', note: note }, { label: 'Sending the invoice back' }).then(function () { closeModal(); toast('Sent back'); go('invoices', true); }).catch(function (err) { box.querySelector('#rjMsg').textContent = err.message; box.querySelector('#rjMsg').style.color = 'var(--bad)'; }); });
       });
     });
   }
