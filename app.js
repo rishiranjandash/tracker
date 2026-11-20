@@ -1623,7 +1623,7 @@ function openReceive(transferId) {
     '<div class="small" id="recvMsg" style="color:var(--bad);margin-top:6px"></div><div class="row recvFoot"><button class="btn" id="confirmRecv">Confirm receipt</button></div>', function (box) {
     const list = box.querySelector('#recvList');
     list.innerHTML = items.map(function (i) {
-      return '<div class="recvItem" data-asset="' + esc(i.assetId) + '"><label class="item" style="cursor:pointer"><input type="checkbox" value="' + esc(i.assetId) + '" style="width:20px;height:20px"><div class="grow"><b>' + esc(i.assetId) + '</b> <span class="muted">' + esc(catLabel(i.category)) + '</span>' + (i.faulty ? ' ' + pill('faulty: ' + (i.issueType || ''), 'bad') : '') + '</div></label>' +
+      return '<div class="recvItem" data-recv="' + esc(i.assetId) + '"><label class="item" style="cursor:pointer"><input type="checkbox" value="' + esc(i.assetId) + '" style="width:20px;height:20px"><div class="grow"><b>' + esc(i.assetId) + '</b> <span class="muted">' + esc(catLabel(i.category)) + '</span>' + (i.faulty ? ' ' + pill('faulty: ' + (i.issueType || ''), 'bad') : '') + '</div></label>' +
         (i.faulty && typeof conditionBlock === 'function' ? '<div class="condWrap" style="margin:0 0 8px 30px">' + conditionBlock(i.category, i.issueType) + '</div>' : '') + '</div>';
     }).join('');
     if (typeof wireCondition === 'function') wireCondition(list);
@@ -1647,7 +1647,7 @@ function openReceive(transferId) {
       const ids = Array.from(list.querySelectorAll('input[type=checkbox]:checked')).map(function (c) { return c.value; });
       const conditions = {}, msg = box.querySelector('#recvMsg'); msg.textContent = '';
       for (let k = 0; k < ids.length; k++) {                                   // a faulty device that is received needs its state
-        const wrap = list.querySelector('.recvItem[data-asset="' + ids[k] + '"] .condBox');
+        const wrap = list.querySelector('.recvItem[data-recv="' + ids[k] + '"] .condBox');
         if (!wrap || typeof readCondition !== 'function') continue;
         const c = readCondition(wrap);
         if (!c.ok) { msg.textContent = ids[k] + ': ' + c.msg; return; }
