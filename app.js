@@ -73,7 +73,7 @@ function catPrefix(c) { return c === 'DEVICE' ? '' : catLabel(c) + ' '; }
 // ===================== TRANSPORT =====================
 
 // Actions that only read. Everything else is a save, which wipes the screen memo below.
-const READS = { issueReport: 1, officeStock: 1, checkinList: 1, managerOverview: 1, saveLocation: 1, stays: 1, home: 1, picker: 1, search: 1, issues: 1, flags: 1, notifications: 1, supervisors: 1, properties: 1, supervisorList: 1, team: 1, assignments: 1, report: 1, options: 1, transfers: 1, transferHistory: 1, officeBatches: 1, invoices: 1, penalties: 1, invoiceCheckins: 1, locationWarnings: 1, techDesk: 1, issueStory: 1, pulse: 1, photoGet: 1, sync: 1 };
+const READS = { checkFoundAsset: 1, issueReport: 1, officeStock: 1, checkinList: 1, managerOverview: 1, saveLocation: 1, stays: 1, home: 1, picker: 1, search: 1, issues: 1, flags: 1, notifications: 1, supervisors: 1, properties: 1, supervisorList: 1, team: 1, assignments: 1, report: 1, options: 1, transfers: 1, transferHistory: 1, officeBatches: 1, invoices: 1, penalties: 1, invoiceCheckins: 1, locationWarnings: 1, techDesk: 1, issueStory: 1, pulse: 1, photoGet: 1, sync: 1 };
 const NO_MEMO = { saveLocation: 1, search: 1, report: 1, photoGet: 1, pulse: 1, sync: 1, notifications: 1 };
 let memo = {};          // last answer for each read, so a screen can be drawn instantly while a fresh answer loads
 let memoEpoch = 0;      // bumped by every save, so an answer that was in flight during a save is not remembered
@@ -531,32 +531,25 @@ function assetPickerItems(list, mineOnly) {
   });
 }
 
-/** "Other" assets: not in the master list. Recorded provisional, flagged for an admin, never blocks movement. */
-let otherSeq = 0;
-function othersField(host) {
-  const rows = [];
-  host.innerHTML = '<h3>Not in the list?</h3><div id="othersRows"></div><button class="btn secondary small" type="button" id="addOther">+ Add an "Other" asset</button>';
-  const wrap = host.querySelector('#othersRows');
-  function addRow() {
-    const div = document.createElement('div');
-    div.className = 'card';
-    div.innerHTML = '<div class="fieldRow"><div><label class="f">Type</label><select>' + (OPTS.categories || []).map(function (c) { return '<option value="' + esc(c.code) + '">' + esc(c.label) + '</option>'; }).join('') + '</select></div>' +
-      '<div><label class="f">Kind / model</label><input type="text" placeholder="e.g. Wristcam, 64GB" list="kinds_' + (++otherSeq) + '"><datalist id="kinds_' + otherSeq + '"></datalist></div></div>' +
-      '<label class="f">What is it? (ID on it, where found…)</label><input type="text" class="desc"><div style="margin-top:8px"><button class="linkBtn" type="button">Remove</button></div>';
-    div.querySelector('button').addEventListener('click', function () { rows.splice(rows.indexOf(div), 1); div.remove(); });
-    const cat = div.querySelector('select'), dl = div.querySelector('datalist');
-    const fillKinds = function () { dl.innerHTML = (OPTS.subTypes[cat.value] || []).map(function (k) { return '<option value="' + esc(k) + '">'; }).join(''); };
-    cat.addEventListener('change', fillKinds); fillKinds();
-    wrap.appendChild(div); rows.push(div);
-  }
-  host.querySelector('#addOther').addEventListener('click', addRow);
-  return {
-    values: function () {
-      return rows.map(function (r) {
-        return { category: r.querySelector('select').value, subType: r.querySelectorAll('input')[0].value, description: r.querySelector('.desc').value };
-      });
-    }
+/**
+ * Check-in: "found something that is not in my list". Nothing is recorded and nothing is created: the ID is checked (right format), and the supervisor is told to
+ * ask an admin to dispatch it to them in the app, so it moves to them through a transfer with a receipt.
+ */
+function foundField(host) {
+  host.innerHTML = '<details class="card" id="foundBox" style="margin:14px 0 0"><summary><b>Found something that is not in your lists?</b></summary>' +
+    '<p class="small muted" style="margin:6px 0">Type its exact ID (for example PIRIG123). Nothing is saved: you are told what to do next.</p>' +
+    '<div class="row" style="gap:8px"><input type="text" id="foundId" class="grow" placeholder="ID written on it" autocapitalize="characters" autocomplete="off"><button class="btn secondary" type="button" id="foundCheck">Check</button></div>' +
+    '<div id="foundAnswer" class="small" style="margin-top:8px"></div></details>';
+  const ask = function () {
+    const id = host.querySelector('#foundId').value.trim(), out = host.querySelector('#foundAnswer');
+    if (!id) { out.innerHTML = ''; return; }
+    out.innerHTML = '<span class="muted">Checking…</span>';
+    callBackend('checkFoundAsset', { assetId: id }).then(function (r) {
+      out.innerHTML = '<div class="banner ' + (r.known ? 'warn' : 'info') + '"><div class="grow"><b>' + esc(r.id) + '</b> · ' + esc(catLabel(r.category)) + '<div style="margin-top:4px">' + esc(r.say) + '</div></div></div>';
+    }).catch(function (e) { out.innerHTML = '<div class="banner bad"><div class="grow">' + esc((e && e.message) || 'Could not check it.') + '</div></div>'; });
   };
+  host.querySelector('#foundCheck').addEventListener('click', ask);
+  host.querySelector('#foundId').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); ask(); } });
 }
 
 // ===================== AUTH =====================
@@ -1436,6 +1429,7 @@ function transferCard(t) {
     const todo = t.items.filter(function (i) { return i.faulty && i.stage === 'OFFICE'; });
     if (todo.length) html += '<div class="banner info" style="margin-top:10px"><div class="grow"><b>What next for the faulty devices?</b>' + todo.map(function (i) { return '<div style="margin-top:8px"><div class="small"><b>' + esc(i.assetId) + '</b> · ' + esc(i.issueType) + ' ' + pill('at office', 'info') + '</div>' + flowButtons({ issueId: i.issueId, assetId: i.assetId, stage: i.stage, handoverId: '' }) + '</div>'; }).join('') + '</div></div>';
   }
+  if ((t.extras || []).length) html += '<div class="small" style="margin-top:8px">' + pill('Extra item' + (t.extras.length > 1 ? 's' : '') + ' received', 'warn') + ' ' + t.extras.map(function (x) { return '<b>' + esc(x.assetId) + '</b>' + (x.status === 'UNLISTED' ? ' <span class="muted">(not in the asset list)</span>' : ''); }).join(', ') + ' <span class="muted">· not on the sender\'s list</span></div>';
   if (t.status === 'IN_TRANSIT' && t.reachedAt) {
     const left = t.receipt ? t.receipt.left : 0, timed = t.receipt && t.receipt.minutes > 0;
     html += canReceive(t) && me.role === 'SUPERVISOR'
@@ -1623,6 +1617,9 @@ function openReceive(transferId) {
   openModal('<div class="row spread"><h2>Confirm receipt · ' + esc(t.id) + '</h2><button class="linkBtn" data-close>Close</button></div>' +
     '<p class="small muted">Tick only what you physically received from ' + esc(t.from) + '. Anything left unticked is flagged as short.' + (items.some(function (i) { return i.faulty; }) ? ' For a faulty device, also say what state it is in and what was not working.' : '') + '</p>' +
     '<div class="row recvHead"><button class="btn secondary small" id="tickAll">Tick all</button><span id="tally" class="small muted"></span></div><div id="recvList"></div>' +
+    '<details class="card" id="extraBox" style="margin:10px 0"><summary><b>Received something that was not on the list?</b></summary>' +
+    '<p class="small muted" style="margin:6px 0">Type the exact ID written on it (for example PIRIG123) and attach a photo. ' + esc(t.from) + ' did not mark it in the app, so ' + (t.fromType === 'SUPERVISOR' ? 'a penalty may be raised against them' : 'the admins are told') + '.</p>' +
+    '<div id="extraRows"></div><button class="btn secondary small" type="button" id="addExtra">+ Add an item</button><div id="extraPhoto"></div></details>' +
     '<div class="small" id="recvMsg" style="color:var(--bad);margin-top:6px"></div><div class="row recvFoot"><button class="btn" id="confirmRecv">Confirm receipt</button></div>', function (box) {
     const list = box.querySelector('#recvList');
     list.innerHTML = items.map(function (i) {
@@ -1630,6 +1627,14 @@ function openReceive(transferId) {
         (i.faulty && typeof conditionBlock === 'function' ? '<div class="condWrap" style="margin:0 0 8px 30px">' + conditionBlock(i.category, i.issueType) + '</div>' : '') + '</div>';
     }).join('');
     if (typeof wireCondition === 'function') wireCondition(list);
+    const extraWrap = box.querySelector('#extraRows'), extraPhoto = photoField(box.querySelector('#extraPhoto'), 'Photo of the extra item(s) (required)');
+    const addExtraRow = function () {
+      const d = document.createElement('div'); d.className = 'row'; d.style.cssText = 'gap:8px;margin-bottom:6px';
+      d.innerHTML = '<input type="text" class="grow extraId" placeholder="ID written on it" autocapitalize="characters" autocomplete="off"><button class="linkBtn" type="button">Remove</button>';
+      d.querySelector('button').addEventListener('click', function () { d.remove(); });
+      extraWrap.appendChild(d);
+    };
+    box.querySelector('#addExtra').addEventListener('click', addExtraRow);
     const tally = function () {
       const n = list.querySelectorAll('input[type=checkbox]:checked').length;
       box.querySelector('#tally').innerHTML = n + ' of ' + items.length + ' ticked' + (n < items.length ? ' · <b style="color:var(--bad)">' + (items.length - n) + ' will be flagged short</b>' : '');
@@ -1648,9 +1653,19 @@ function openReceive(transferId) {
         if (!c.ok) { msg.textContent = ids[k] + ': ' + c.msg; return; }
         conditions[ids[k]] = { state: c.state, type: c.type, detail: c.detail };
       }
+      const extraIds = Array.from(extraWrap.querySelectorAll('.extraId')).map(function (x) { return x.value.trim(); }).filter(Boolean), xf = extraPhoto.file();
+      if (extraIds.length && !xf) { box.querySelector('#extraBox').open = true; msg.textContent = 'Attach a photo of the extra item(s).'; return; }
       if (ids.length < items.length && !confirm((items.length - ids.length) + ' item(s) will be flagged as NOT received. Continue?')) return;
       busy(e.target, function () {
-        return fastCall('receiveTransfer', { transferId: t.id, receivedIds: ids, noneArrived: ids.length === 0, conditions: conditions }, { total: items.length, label: 'Receipt of ' + t.id }).then(function (r) {
+        const body = { transferId: t.id, receivedIds: ids, noneArrived: ids.length === 0, conditions: conditions };
+        if (extraIds.length) {                                                  // extras are checked by the server (format), so this one is not shown before the answer; the photo follows in the background
+          body.extras = extraIds.map(function (id) { return { assetId: id }; }); body.extrasPhotoPending = true;
+          return callBackend('receiveTransfer', body).then(function (r) {
+            if (r.extraIds && r.extraIds.length) photoQueue.add('extra', r.extraIds, r.extraIds[0], xf);
+            closeModal(); toast((r.short ? r.received + ' received, ' + r.short + ' flagged short' : 'All ' + r.received + ' received') + ' · ' + r.extras + ' extra item(s) noted'); go('transfers', true);
+          }).catch(function (err) { box.querySelector('#extraBox').open = true; msg.textContent = (err && err.message) || 'Could not save.'; });
+        }
+        return fastCall('receiveTransfer', body, { total: items.length, label: 'Receipt of ' + t.id }).then(function (r) {
           closeModal(); toast(r.short ? r.received + ' received, ' + r.short + ' flagged short' : 'All ' + r.received + ' received'); go('transfers', true);
         });
       });
@@ -1668,10 +1683,13 @@ VIEWS.newTransfer = function (preselect) {
     '<label class="f">Assets (type to search, tick to add)</label><div id="sendSearch"></div>' +
     (isAdmin ? '<label class="f" style="margin-bottom:0"><input type="checkbox" id="showAll"> Include assets the records show elsewhere (flagged for review)</label>' : '<div class="small muted">Devices and SD cards at your property are listed, yours first.</div>') + '</div>' +
     '<div id="pickHost"></div>' +
-    '<div id="othersHost"></div><label class="f">Note (optional)</label><textarea id="note"></textarea><div id="photoHost"></div>' +
+    '<details class="card" id="missBox" style="margin:10px 0"><summary><b>Report a missing asset</b> <span class="small muted">Something that should be in this send but is not there</span></summary>' +
+    '<div class="small muted" style="margin:6px 0">It is not sent. The admins are told, and it is followed up like an asset left out of a check-in.</div><div id="missPick"></div>' +
+    '<label class="f">What happened? <span class="muted">(optional)</span></label><textarea id="missNote" maxlength="300" placeholder="e.g. Not in the bag; last seen with the worker"></textarea></details>' +
+    '<label class="f">Note (optional)</label><textarea id="note"></textarea><div id="photoHost"></div>' +
     '<div class="row" style="margin-top:14px"><button class="btn" id="submitTransfer">' + (isAdmin ? 'Mark as dispatched' : 'Mark as sent') + '</button></div>' +
     '<p class="small muted">Assets stay with you and show as "in transit" until the receiver confirms what arrived.</p></div>';
-  const others = othersField($('othersHost')), photo = photoField($('photoHost'), 'Photo of the package / contents (optional)');
+  const photo = photoField($('photoHost'), 'Photo of the package / contents (optional)');
   return Promise.all([cachedStale('picker', {}, 30000), cachedStale('supervisorList', {}, 300000)]).then(function (r) {
     const all = r[0];
     $('toSup').innerHTML += r[1].map(function (s) { return '<option value="' + esc(s.id) + '">' + (isAdmin ? '' : 'Supervisor: ') + esc(s.name) + ' (' + esc(s.location) + ')</option>'; }).join('');
@@ -1689,21 +1707,31 @@ VIEWS.newTransfer = function (preselect) {
     const outsideMine = pre.some(function (id) { return !mineIds[id]; });
     if (outsideMine && $('showAll')) $('showAll').checked = true;
     const picker = createPicker($('pickHost'), { searchHost: $('sendSearch'), items: assetPickerItems(all, isAdmin && !outsideMine), multi: true, placeholder: 'Search by ID or type…', selected: pre });
-    if ($('showAll')) $('showAll').addEventListener('change', function () { picker.setItems(assetPickerItems(all, !$('showAll').checked)); });
+    const missPicker = createPicker($('missPick'), { items: assetPickerItems(all, isAdmin && !outsideMine), multi: true, placeholder: 'Search the missing asset by ID…' });
+    if ($('showAll')) $('showAll').addEventListener('change', function () { picker.setItems(assetPickerItems(all, !$('showAll').checked)); missPicker.setItems(assetPickerItems(all, !$('showAll').checked)); });
     $('submitTransfer').addEventListener('click', function (e) {
-      const ids = picker.selected(), oth = others.values();
-      if (!ids.length && !oth.length) return toast('Select at least one asset.', true);
-      if (!$('toSup').value) return toast('Choose where the assets are going.', true);
+      const ids = picker.selected(), miss = missPicker.selected();
+      if (!ids.length && !miss.length) return toast('Select at least one asset to send, or report a missing one.', true);
+      if (ids.length && !$('toSup').value) return toast('Choose where the assets are going.', true);
+      const clash = miss.filter(function (id) { return ids.indexOf(id) !== -1; });
+      if (clash.length) return toast(clash.join(', ') + ' is in the send and also reported missing. Choose one.', true);
+      if (!ids.length) {                                                       // only missing reports: nothing is sent
+        return busy(e.target, function () {
+          return callBackend('createTransfer', { assetIds: [], missing: miss.map(function (id) { return { assetId: id, note: $('missNote').value.trim() }; }) }).then(function (res) {
+            toast(res.missingCount + ' reported missing. The admins are told.'); go('transfers', true);
+          });
+        });
+      }
       const dest = $('toSup').value.replace(/^OFFICE:/, ''), toOffice = $('toSup').value === 'OFFICE' || /^OFFICE:/.test($('toSup').value);
       busy(e.target, function () {
         const f = photo.file();   // the send goes through now; the photo follows in the background
-        const body = { toType: toOffice ? 'OFFICE' : 'SUPERVISOR', toId: toOffice && dest !== 'OFFICE' ? dest : (toOffice ? '' : dest), assetIds: ids, others: oth, note: $('note').value, photoPending: !!f };
+        const body = { toType: toOffice ? 'OFFICE' : 'SUPERVISOR', toId: toOffice && dest !== 'OFFICE' ? dest : (toOffice ? '' : dest), assetIds: ids, missing: miss.map(function (id) { return { assetId: id, note: $('missNote').value.trim() }; }), note: $('note').value, photoPending: !!f };
         if (typeof readReplacement === 'function' && !toOffice) { const rf = readReplacement(); if (rf.length) body.replaceFor = rf; }
         // without a photo the send is shown at once and goes in the background; with a photo it waits for the id to attach the photo to
         const call = f ? callBackend('createTransfer', body) : fastCall('createTransfer', body, { toName: $('toSup').selectedOptions[0] ? $('toSup').selectedOptions[0].textContent : '', label: 'The send' });
         return call.then(function (res) {
           if (f) photoQueue.add('transfer', [res.transferId], res.transferId, f);
-          toast(res.itemCount + ' item(s) in transit' + (res.transferId ? ' · ' + res.transferId : '') + (f ? ' · photo uploading in the background' : '')); go('transfers');
+          toast(res.itemCount + ' item(s) in transit' + (res.transferId ? ' · ' + res.transferId : '') + (miss.length ? ' · ' + miss.length + ' reported missing' : '') + (f ? ' · photo uploading in the background' : '')); go('transfers');
         });
       });
     });
@@ -1741,7 +1769,7 @@ VIEWS.checkin = function () {
       section('Already at ' + esc(c.locationName) + ' before you came', 'These were here already, with someone else or with nobody. Tick the ones you find here: you become their custodian.', c.here, false, 'HERE') +
       section('Already recorded here with you', 'Untick anything that is not really with you.', c.mine, true, 'MINE') +
       '<div id="othersHost"></div><div class="row" style="margin-top:14px"><button class="btn" id="submitCheckin">Submit check-in</button></div><div id="result"></div>';
-    const others = othersField($('othersHost'));
+    foundField($('othersHost'));
     document.querySelectorAll('[data-all]').forEach(function (btn) {
       btn.addEventListener('click', function () { document.querySelectorAll('.ck[data-g="' + btn.getAttribute('data-all') + '"]').forEach(function (x) { x.checked = true; }); });
     });
@@ -1753,7 +1781,7 @@ VIEWS.checkin = function () {
       if (left.OLD.length && !confirm(left.OLD.length + ' asset(s) from your old property are not ticked (' + names(left.OLD) + ').\n\nThey stay recorded at the old property. If they are with you, go back and tick them.\n\nOK = send without them, Cancel = go back.')) return;
       if (left.MINE.length && !confirm(left.MINE.length + ' asset(s) recorded here with you are not ticked (' + names(left.MINE) + '). They will be flagged for review.\n\nOK = send, Cancel = go back.')) return;
       busy(e.target, function () {
-        return callBackend('checkin', { assetIds: ticked, others: others.values() }).then(function (r) {
+        return callBackend('checkin', { assetIds: ticked }).then(function (r) {
           const bits = [];
           if (r.moved) bits.push(r.moved + ' brought here');
           if (r.claimed) bits.push(r.claimed + ' taken over or added');
@@ -2018,7 +2046,7 @@ function renderDetail(d) {
 // ---- Flags ("needs attention") ----
 const FLAG_TITLES = {
   SHORT_RECEIPT: 'Short receipt', HOLDERLESS: 'No holder', CONFLICT: 'Custody conflict', POSSIBLY_MISSING: 'Possibly missing', CUSTODY_MISMATCH: 'Sent from a different holder',
-  PROVISIONAL_ASSET: 'Asset not in master list', CHECKIN_OVERDUE: 'Check-in overdue', STALE_TRANSIT: 'Stuck in transit', ASSET_MISSING: 'Reported missing', OFF_PLAN: 'Off planned movement', OFF_SCHEDULE: 'Not at scheduled property', INVOICE_OVERDUE: 'Invoice not sent', SUPERVISOR_OTHER_CITY: 'Supervisor working in another city', CHECKIN_ASSET_UNCLAIMED: 'Left out of two check-ins'
+  PROVISIONAL_ASSET: 'Asset not in master list', EXTRA_NOT_IN_LIST: 'Extra item received, not in the asset list', CHECKIN_OVERDUE: 'Check-in overdue', STALE_TRANSIT: 'Stuck in transit', ASSET_MISSING: 'Reported missing', OFF_PLAN: 'Off planned movement', OFF_SCHEDULE: 'Not at scheduled property', INVOICE_OVERDUE: 'Invoice not sent', SUPERVISOR_OTHER_CITY: 'Supervisor working in another city', CHECKIN_ASSET_UNCLAIMED: 'Left out of two check-ins'
 };
 const ASSIGNABLE = ['HOLDERLESS', 'CONFLICT', 'POSSIBLY_MISSING', 'CUSTODY_MISMATCH'];
 
@@ -2463,7 +2491,7 @@ VIEWS.help = function () {
     '<div class="stickyHead"><input type="text" id="helpFilter" placeholder="Search help…" class="grow"></div>' +
     '<div id="helpList">' + secs.map(function (s, i) { return '<details class="helpSec" data-i="' + i + '"><summary>' + esc(s.title) + '</summary><div class="helpBody">' + s.html + '</div></details>'; }).join('') + '</div>' +
     '<div id="helpNone" class="small muted hidden">Nothing matches. Try a different word, or contact your manager.</div>' + link +
-    '<p class="small muted">App version: ' + esc((function () { const m = document.querySelector('meta[name="app-build"]'); const v = m ? m.content : ''; return !v || v === '__BUILD__' ? 'local copy' : v; })()) + '</p>' +
+    '<p class="small muted">App version: ' + esc((function () { const m = document.querySelector('meta[name="app-build"]'); const v = m ? m.content : ''; return !v || v === '__BUILD__' ? 'local copy' : v; })()) + ' · Server: ' + esc(me && me.serverBuild ? me.serverBuild : 'old version (not redeployed?)') + '</p>' +
     '<details class="helpSec" id="upTestSec"><summary>Test photo upload (for support)</summary><div class="helpBody"><p class="small muted">Sends a tiny test picture and shows where it stops, with timings. If photos or invoices fail to upload, press this and send the result to your manager.</p><div class="row"><button class="btn small" id="upTestRun">Run the test</button><button class="btn secondary small" id="upTestCopy">Copy</button></div><pre id="upTestOut" class="small" style="white-space:pre-wrap"></pre></div></details>' +
     '<details class="helpSec" id="speedSec"><summary>Speed check (for support)</summary><div class="helpBody"><p class="small muted">How long this phone waited for each kind of request since the app was opened. If the app feels slow, press Copy and send it to your manager.</p><pre id="speedOut" class="small" style="white-space:pre-wrap"></pre><div class="row"><button class="btn secondary small" id="speedCopy">Copy</button><button class="btn secondary small" id="speedReset">Start over</button></div></div></details></div>';
   $('upTestRun').addEventListener('click', function (e) {
