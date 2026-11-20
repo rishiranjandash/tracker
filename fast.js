@@ -176,7 +176,6 @@ FAST_PATCH.createTransfer = function (p, o) {
   const now = nowIst(), items = [];
   let cat = {}; fastEach('picker', function (list) { list.forEach(function (a) { cat[a.id] = a.c; }); });
   (p.assetIds || []).forEach(function (id) { items.push({ assetId: id, category: cat[id] || 'DEVICE', status: 'IN_TRANSIT' }); });
-  (p.others || []).forEach(function (x, i) { items.push({ assetId: 'Other ' + (i + 1), category: x.category || 'DEVICE', status: 'IN_TRANSIT' }); });
   fastEach('transfers', function (list) {
     list.unshift({ id: 'SENDING-' + Date.now().toString(36), pending: true, createdAt: now, status: 'IN_TRANSIT', from: me ? me.name : '', fromLocation: '', fromType: me && me.role === 'ADMIN' ? 'ADMIN' : 'SUPERVISOR', fromId: '', to: o.toName || '', toType: p.toType, toId: p.toId || '',
       sentBy: me ? me.name : '', receivedBy: '', receivedAt: '', note: p.note || '', photoFileId: '', photoState: '', items: items, invoices: [], faulty: 0, atOffice: false, totalItems: items.length, canReceive: false, canReach: false });
